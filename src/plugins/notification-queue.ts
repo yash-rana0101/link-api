@@ -4,16 +4,16 @@ import fp from "fastify-plugin";
 import Redis from "ioredis";
 
 import { env } from "../config/env";
-import { VERIFICATION_QUEUE_NAME, VerificationQueueJobData } from "../modules/verification/verification.queue";
+import { NOTIFICATION_QUEUE_NAME, NotificationQueueJobData } from "../modules/notification/notification.queue";
 import { createDisabledQueue } from "../services/disabled-queue.service";
-import { processVerificationJob } from "../workers/verification.worker";
+import { processNotificationJob } from "../workers/notification.worker";
 
-const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
+const notificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
   let queueConnection: Redis | null = null;
   let workerConnection: Redis | null = null;
-  let verificationWorker: Worker<VerificationQueueJobData> | null = null;
-  let verificationQueue: Queue<VerificationQueueJobData> = createDisabledQueue(
-    VERIFICATION_QUEUE_NAME,
+  let notificationWorker: Worker<NotificationQueueJobData> | null = null;
+  let notificationQueue: Queue<NotificationQueueJobData> = createDisabledQueue(
+    NOTIFICATION_QUEUE_NAME,
     app.log,
   );
 
@@ -31,62 +31,68 @@ const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
     });
 
     queueConnection.on("error", (error) => {
-      app.log.error({ err: error }, "Verification queue Redis connection error");
+      app.log.error({ err: error }, "Notification queue Redis connection error");
     });
 
     workerConnection.on("error", (error) => {
-      app.log.error({ err: error }, "Verification worker Redis connection error");
+      app.log.error({ err: error }, "Notification worker Redis connection error");
     });
 
     await Promise.all([queueConnection.connect(), workerConnection.connect()]);
 
-    verificationQueue = new Queue<VerificationQueueJobData>(VERIFICATION_QUEUE_NAME, {
+    notificationQueue = new Queue<NotificationQueueJobData>(NOTIFICATION_QUEUE_NAME, {
       connection: queueConnection,
       defaultJobOptions: {
         removeOnComplete: true,
         removeOnFail: false,
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 1000,
+        },
       },
     });
 
-    verificationWorker = new Worker<VerificationQueueJobData>(
-      VERIFICATION_QUEUE_NAME,
+    notificationWorker = new Worker<NotificationQueueJobData>(
+      NOTIFICATION_QUEUE_NAME,
       async (job) => {
-        await processVerificationJob(app, job);
+        await processNotificationJob(app, job);
       },
       {
         connection: workerConnection,
       },
     );
 
-    verificationWorker.on("failed", (job, error) => {
+    notificationWorker.on("failed", (job, error) => {
       app.log.error(
         {
           err: error,
           jobId: job?.id,
-          experienceId: job?.data.experienceId,
+          userId: job?.data.userId,
+          type: job?.data.type,
         },
-        "Verification queue job failed.",
+        "Notification queue job failed.",
       );
     });
 
-    await verificationWorker.waitUntilReady();
+    await notificationWorker.waitUntilReady();
   } catch (error) {
     app.log.warn(
       {
         err: error,
       },
-      "Verification queue is disabled because Redis is unavailable.",
+      "Notification queue is disabled because Redis is unavailable.",
     );
   }
 
-  app.decorate("verificationQueue", verificationQueue);
+  app.decorate("notificationQueue", notificationQueue);
 
   app.addHook("onClose", async () => {
-    if (verificationWorker) {
-      await verificationWorker.close();
+    if (notificationWorker) {
+      await notificationWorker.close();
     }
 
-    await verificationQueue.close();
+    await notificationQueue.close();
 
     if (queueConnection) {
       await queueConnection.quit().catch(() => undefined);
@@ -98,4 +104,4 @@ const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
   });
 });
 
-export default verificationQueuePlugin;
+export default notificationQueuePlugin;

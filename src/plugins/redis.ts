@@ -14,13 +14,20 @@ const redisPlugin: FastifyPluginAsync = fp(async (app) => {
     app.log.error({ err: error }, "Redis connection error");
   });
 
-  await redis.connect();
-  await redis.ping();
+  try {
+    await redis.connect();
+    await redis.ping();
+  } catch (error) {
+    app.log.warn(
+      { err: error },
+      "Redis is unavailable. Continuing in degraded mode with DB fallback.",
+    );
+  }
 
   app.decorate("redis", redis);
 
   app.addHook("onClose", async () => {
-    await redis.quit();
+    await redis.quit().catch(() => undefined);
   });
 });
 

@@ -11,7 +11,9 @@ import { postRoutes } from "./modules/post/post.routes";
 import { trustRoutes } from "./modules/trust/trust.routes";
 import { userRoutes } from "./modules/user/user.routes";
 import { verificationRoutes } from "./modules/verification/verification.routes";
+import feedQueuePlugin from "./plugins/feed-queue";
 import loggerPlugin from "./plugins/logger";
+import notificationQueuePlugin from "./plugins/notification-queue";
 import prismaPlugin from "./plugins/prisma";
 import redisPlugin from "./plugins/redis";
 import rustEnginePlugin from "./plugins/rustEngine";
@@ -61,6 +63,8 @@ export const buildApp = () => {
   app.register(prismaPlugin);
   app.register(redisPlugin);
   app.register(rustEnginePlugin);
+  app.register(notificationQueuePlugin);
+  app.register(feedQueuePlugin);
   app.register(verificationQueuePlugin);
   app.register(trustScoreQueuePlugin);
   app.register(healthRoutes);

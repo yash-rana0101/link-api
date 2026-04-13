@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
 
+import { createRateLimitPreHandler } from "../../middlewares/rate-limit";
 import { VerificationController } from "./verification.controller";
 import { VerificationRepository } from "./verification.repository";
 import {
@@ -22,11 +23,19 @@ export const verificationRoutes: FastifyPluginAsync = async (app) => {
     app.log,
   );
   const verificationController = new VerificationController(verificationService);
+  const requestRateLimit = createRateLimitPreHandler(app, {
+    endpoint: "verification:request",
+    maxRequests: 30,
+  });
+  const respondRateLimit = createRateLimitPreHandler(app, {
+    endpoint: "verification:respond",
+    maxRequests: 40,
+  });
 
   app.post<{ Body: RequestVerificationBody }>(
     "/request",
     {
-      preHandler: [app.authenticate],
+      preHandler: [app.authenticate, requestRateLimit],
       schema: requestVerificationSchema,
     },
     verificationController.requestVerification,
@@ -35,7 +44,7 @@ export const verificationRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: RespondVerificationBody }>(
     "/respond",
     {
-      preHandler: [app.authenticate],
+      preHandler: [app.authenticate, respondRateLimit],
       schema: respondVerificationSchema,
     },
     verificationController.respondVerification,

@@ -30,7 +30,7 @@ export class PostController {
     reply: FastifyReply,
   ): Promise<void> => {
     try {
-      const feed = await this.postService.getFeed(request.query);
+      const feed = await this.postService.getFeed(request.query, request.user.sub);
 
       reply.status(200).send({
         success: true,

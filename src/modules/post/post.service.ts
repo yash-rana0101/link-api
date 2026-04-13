@@ -1,8 +1,15 @@
 import { Prisma } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
+import { NotificationQueueJobData } from "../notification/notification.queue";
+import { CacheService } from "../../services/cache.service";
+import { QueueService } from "../../services/queue.service";
 import { HttpError } from "../../utils/http-error";
 import { AddCommentBody, CreatePostBody, FeedQuerystring } from "./post.schema";
+import { FeedQueueJobData } from "./feed.queue";
+
+const FEED_CACHE_TTL_SECONDS = 60;
+const FEED_CACHE_PREFIX = "feed";
 
 const userSummarySelect = {
   id: true,
@@ -94,7 +101,13 @@ interface LikeResult {
 }
 
 export class PostService {
-  constructor(private readonly app: FastifyInstance) { }
+  private readonly cacheService: CacheService;
+  private readonly queueService: QueueService;
+
+  constructor(private readonly app: FastifyInstance) {
+    this.cacheService = new CacheService(app.redis, app.log);
+    this.queueService = new QueueService(app.log);
+  }
 
   async createPost(data: CreatePostBody, userId: string): Promise<PostSummaryRecord> {
     const normalizedUserId = this.normalizeRequiredId(userId, "userId");
@@ -108,12 +121,31 @@ export class PostService {
       select: postSummarySelect,
     });
 
+    await Promise.all([
+      this.invalidateFeedCacheForUsers([normalizedUserId], "post_created"),
+      this.enqueueNotification({
+        userId: normalizedUserId,
+        type: "post_created",
+        payload: {
+          postId: post.id,
+        },
+      }),
+    ]);
+
     return this.mapPostSummary(post);
   }
 
-  async getFeed(query: FeedQuerystring): Promise<FeedResult> {
+  async getFeed(query: FeedQuerystring, userId: string): Promise<FeedResult> {
+    const normalizedUserId = this.normalizeRequiredId(userId, "userId");
     const cursorDate = this.parseCursor(query.cursor);
     const limit = this.parseLimit(query.limit);
+    const cacheKey = this.buildFeedCacheKey(normalizedUserId, cursorDate, limit);
+
+    const cachedFeed = await this.cacheService.get<FeedResult>(cacheKey);
+
+    if (cachedFeed) {
+      return this.hydrateFeedDates(cachedFeed);
+    }
 
     const posts = await this.app.prisma.post.findMany({
       where: cursorDate
@@ -132,7 +164,7 @@ export class PostService {
     const pageItems = hasMore ? posts.slice(0, limit) : posts;
     const mappedItems = pageItems.map((post) => this.mapPostSummary(post));
 
-    return {
+    const feedResult: FeedResult = {
       items: mappedItems,
       pageInfo: {
         hasMore,
@@ -142,6 +174,10 @@ export class PostService {
           : null,
       },
     };
+
+    await this.cacheService.set(cacheKey, feedResult, FEED_CACHE_TTL_SECONDS);
+
+    return feedResult;
   }
 
   async getPostById(postId: string): Promise<PostDetailsRecord> {
@@ -176,13 +212,15 @@ export class PostService {
         id: normalizedPostId,
       },
     });
+
+    await this.invalidateFeedCacheForUsers([post.userId], "post_deleted");
   }
 
   async likePost(postId: string, userId: string): Promise<LikeResult> {
     const normalizedPostId = this.normalizeRequiredId(postId, "postId");
     const normalizedUserId = this.normalizeRequiredId(userId, "userId");
 
-    await this.ensurePostExists(normalizedPostId);
+    const post = await this.ensurePostExists(normalizedPostId);
 
     const existingLike = await this.app.prisma.like.findUnique({
       where: {
@@ -227,6 +265,8 @@ export class PostService {
       },
     });
 
+    await this.invalidateFeedCacheForUsers([post.userId, normalizedUserId], "post_liked");
+
     return {
       postId: normalizedPostId,
       liked,
@@ -239,9 +279,9 @@ export class PostService {
     const normalizedUserId = this.normalizeRequiredId(userId, "userId");
     const content = this.requireTrimmedContent(data.content, "Comment content");
 
-    await this.ensurePostExists(normalizedPostId);
+    const post = await this.ensurePostExists(normalizedPostId);
 
-    return this.app.prisma.comment.create({
+    const comment = await this.app.prisma.comment.create({
       data: {
         postId: normalizedPostId,
         userId: normalizedUserId,
@@ -249,6 +289,62 @@ export class PostService {
       },
       select: commentSelect,
     });
+
+    await this.invalidateFeedCacheForUsers([post.userId, normalizedUserId], "post_commented");
+
+    return comment;
+  }
+
+  private buildFeedCacheKey(userId: string, cursor: Date | undefined, limit: number): string {
+    const cursorToken = cursor ? cursor.toISOString() : "first";
+
+    return `${FEED_CACHE_PREFIX}:${userId}:cursor:${cursorToken}:limit:${limit}`;
+  }
+
+  private hydrateFeedDates(feed: FeedResult): FeedResult {
+    return {
+      ...feed,
+      items: feed.items.map((item) => ({
+        ...item,
+        createdAt: new Date(item.createdAt),
+      })),
+    };
+  }
+
+  private async invalidateFeedCacheForUsers(userIds: string[], source: string): Promise<void> {
+    const normalizedUserIds = Array.from(new Set(userIds.map((userId) => userId.trim()).filter(Boolean)));
+
+    if (!normalizedUserIds.length) {
+      return;
+    }
+
+    await Promise.all(normalizedUserIds.map(async (targetUserId) => {
+      const jobData: FeedQueueJobData = {
+        action: "invalidate_user_feed",
+        userId: targetUserId,
+        source,
+      };
+
+      try {
+        await this.queueService.addJob(this.app.feedQueue, "feed-cache-invalidate", jobData);
+      } catch {
+        await this.cacheService.delByPattern(`${FEED_CACHE_PREFIX}:${targetUserId}:*`);
+      }
+    }));
+  }
+
+  private async enqueueNotification(data: NotificationQueueJobData): Promise<void> {
+    try {
+      await this.queueService.addJob(this.app.notificationQueue, "send-notification", data);
+    } catch {
+      this.app.log.error(
+        {
+          userId: data.userId,
+          type: data.type,
+        },
+        "Failed to enqueue notification job.",
+      );
+    }
   }
 
   private async ensurePostExists(postId: string): Promise<{ id: string; userId: string }> {

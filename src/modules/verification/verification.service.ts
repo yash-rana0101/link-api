@@ -3,6 +3,7 @@ import { Queue } from "bullmq";
 import { FastifyBaseLogger } from "fastify";
 
 import { TrustScoreEvent, TrustScoreQueueJobData } from "../trust/trust.queue";
+import { QueueService } from "../../services/queue.service";
 import { HttpError } from "../../utils/http-error";
 import { RustEngineClient } from "../../utils/rust-engine-client";
 import { VerificationQueueJobData } from "./verification.queue";
@@ -39,13 +40,17 @@ export interface VerificationSummaryResult {
 }
 
 export class VerificationService {
+  private readonly queueService: QueueService;
+
   constructor(
     private readonly repository: VerificationRepository,
     private readonly verificationQueue: Queue<VerificationQueueJobData>,
     private readonly trustScoreQueue: Queue<TrustScoreQueueJobData>,
     private readonly rustEngine: RustEngineClient,
     private readonly logger: FastifyBaseLogger,
-  ) { }
+  ) {
+    this.queueService = new QueueService(logger);
+  }
 
   async requestVerification(data: RequestVerificationBody, requesterId: string): Promise<RequestVerificationResult> {
     const experienceId = data.experienceId.trim();
@@ -94,7 +99,8 @@ export class VerificationService {
       eligibleVerifierIds,
     );
 
-    await Promise.all(createdVerifications.map((verification) => this.verificationQueue.add(
+    await Promise.all(createdVerifications.map((verification) => this.queueService.addJob(
+      this.verificationQueue,
       "verification-requested",
       {
         experienceId,
@@ -285,7 +291,7 @@ export class VerificationService {
 
   private async enqueueTrustRecalculation(userId: string, event: TrustScoreEvent): Promise<void> {
     try {
-      await this.trustScoreQueue.add("trust-score-recalculate", {
+      await this.queueService.addJob(this.trustScoreQueue, "trust-score-recalculate", {
         userId,
         event,
       });

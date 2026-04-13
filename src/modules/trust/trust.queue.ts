@@ -1,4 +1,4 @@
-export const TRUST_SCORE_QUEUE_NAME = "trust_score_queue";
+export const TRUST_SCORE_QUEUE_NAME = "trust_queue";
 
 export const trustScoreEvents = [
   "experience_verified",

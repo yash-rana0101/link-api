@@ -4,18 +4,15 @@ import fp from "fastify-plugin";
 import Redis from "ioredis";
 
 import { env } from "../config/env";
-import { VERIFICATION_QUEUE_NAME, VerificationQueueJobData } from "../modules/verification/verification.queue";
+import { FEED_QUEUE_NAME, FeedQueueJobData } from "../modules/post/feed.queue";
 import { createDisabledQueue } from "../services/disabled-queue.service";
-import { processVerificationJob } from "../workers/verification.worker";
+import { processFeedJob } from "../workers/feed.worker";
 
-const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
+const feedQueuePlugin: FastifyPluginAsync = fp(async (app) => {
   let queueConnection: Redis | null = null;
   let workerConnection: Redis | null = null;
-  let verificationWorker: Worker<VerificationQueueJobData> | null = null;
-  let verificationQueue: Queue<VerificationQueueJobData> = createDisabledQueue(
-    VERIFICATION_QUEUE_NAME,
-    app.log,
-  );
+  let feedWorker: Worker<FeedQueueJobData> | null = null;
+  let feedQueue: Queue<FeedQueueJobData> = createDisabledQueue(FEED_QUEUE_NAME, app.log);
 
   try {
     queueConnection = new Redis(env.redisUrl, {
@@ -31,62 +28,68 @@ const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
     });
 
     queueConnection.on("error", (error) => {
-      app.log.error({ err: error }, "Verification queue Redis connection error");
+      app.log.error({ err: error }, "Feed queue Redis connection error");
     });
 
     workerConnection.on("error", (error) => {
-      app.log.error({ err: error }, "Verification worker Redis connection error");
+      app.log.error({ err: error }, "Feed worker Redis connection error");
     });
 
     await Promise.all([queueConnection.connect(), workerConnection.connect()]);
 
-    verificationQueue = new Queue<VerificationQueueJobData>(VERIFICATION_QUEUE_NAME, {
+    feedQueue = new Queue<FeedQueueJobData>(FEED_QUEUE_NAME, {
       connection: queueConnection,
       defaultJobOptions: {
         removeOnComplete: true,
         removeOnFail: false,
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 1000,
+        },
       },
     });
 
-    verificationWorker = new Worker<VerificationQueueJobData>(
-      VERIFICATION_QUEUE_NAME,
+    feedWorker = new Worker<FeedQueueJobData>(
+      FEED_QUEUE_NAME,
       async (job) => {
-        await processVerificationJob(app, job);
+        await processFeedJob(app, job);
       },
       {
         connection: workerConnection,
       },
     );
 
-    verificationWorker.on("failed", (job, error) => {
+    feedWorker.on("failed", (job, error) => {
       app.log.error(
         {
           err: error,
           jobId: job?.id,
-          experienceId: job?.data.experienceId,
+          action: job?.data.action,
+          userId: job?.data.userId,
         },
-        "Verification queue job failed.",
+        "Feed queue job failed.",
       );
     });
 
-    await verificationWorker.waitUntilReady();
+    await feedWorker.waitUntilReady();
   } catch (error) {
     app.log.warn(
       {
         err: error,
       },
-      "Verification queue is disabled because Redis is unavailable.",
+      "Feed queue is disabled because Redis is unavailable.",
     );
   }
 
-  app.decorate("verificationQueue", verificationQueue);
+  app.decorate("feedQueue", feedQueue);
 
   app.addHook("onClose", async () => {
-    if (verificationWorker) {
-      await verificationWorker.close();
+    if (feedWorker) {
+      await feedWorker.close();
     }
 
-    await verificationQueue.close();
+    await feedQueue.close();
 
     if (queueConnection) {
       await queueConnection.quit().catch(() => undefined);
@@ -98,4 +101,4 @@ const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
   });
 });
 
-export default verificationQueuePlugin;
+export default feedQueuePlugin;
