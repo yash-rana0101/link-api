@@ -1,6 +1,8 @@
-import { ConnectionStatus, Prisma } from "@prisma/client";
+import { ConnectionStatus, NotificationType, Prisma } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
+import { NotificationQueueJobData } from "../notification/notification.queue";
+import { QueueService } from "../../services/queue.service";
 import { HttpError } from "../../utils/http-error";
 import { ConversationMessagesQuerystring, SendMessageBody } from "./messaging.schema";
 
@@ -77,7 +79,11 @@ interface ConversationMessagesResult {
 }
 
 export class MessagingService {
-  constructor(private readonly app: FastifyInstance) { }
+  private readonly queueService: QueueService;
+
+  constructor(private readonly app: FastifyInstance) {
+    this.queueService = new QueueService(app.log);
+  }
 
   async sendMessage(data: SendMessageBody, senderId: string): Promise<MessageRecord> {
     const normalizedSenderId = this.normalizeRequiredId(senderId, "senderId");
@@ -95,7 +101,7 @@ export class MessagingService {
       normalizedReceiverId,
     );
 
-    return this.app.prisma.message.create({
+    const message = await this.app.prisma.message.create({
       data: {
         senderId: normalizedSenderId,
         conversationId,
@@ -103,6 +109,14 @@ export class MessagingService {
       },
       select: messageSelect,
     });
+
+    await this.enqueueNotification({
+      userId: normalizedReceiverId,
+      type: NotificationType.MESSAGE_RECEIVED,
+      message: "You received a new message.",
+    });
+
+    return message;
   }
 
   async getConversations(userId: string): Promise<ConversationSummaryRecord[]> {
@@ -348,5 +362,20 @@ export class MessagingService {
     }
 
     return parsed;
+  }
+
+  private async enqueueNotification(data: NotificationQueueJobData): Promise<void> {
+    try {
+      await this.queueService.addJob(this.app.notificationQueue, "send-notification", data);
+    } catch (error) {
+      this.app.log.error(
+        {
+          err: error,
+          userId: data.userId,
+          type: data.type,
+        },
+        "Failed to enqueue message notification.",
+      );
+    }
   }
 }

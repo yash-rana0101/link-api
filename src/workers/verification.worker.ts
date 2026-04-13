@@ -1,4 +1,5 @@
 import { Job } from "bullmq";
+import { NotificationType } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
 import { VerificationQueueJobData } from "../modules/verification/verification.queue";
@@ -20,11 +21,8 @@ export const processVerificationJob = async (
   try {
     await app.notificationQueue.add("notify-verification-request", {
       userId: job.data.verifierId,
-      type: "verification_requested",
-      payload: {
-        experienceId: job.data.experienceId,
-        requesterId: job.data.requesterId,
-      },
+      type: NotificationType.VERIFICATION_REQUEST,
+      message: "You received a verification request.",
     });
   } catch (error) {
     app.log.error(

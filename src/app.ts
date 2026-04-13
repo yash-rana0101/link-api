@@ -7,7 +7,9 @@ import { authRoutes } from "./modules/auth/auth.routes";
 import { connectionRoutes } from "./modules/connections/connections.routes";
 import { experienceRoutes } from "./modules/experience/experience.routes";
 import { healthRoutes } from "./modules/health/health.route";
+import { applicationRoutes, jobRoutes } from "./modules/jobs/jobs.routes";
 import { messagingRoutes } from "./modules/messaging/messaging.routes";
+import { notificationRoutes } from "./modules/notification/notification.routes";
 import { postRoutes } from "./modules/post/post.routes";
 import { trustRoutes } from "./modules/trust/trust.routes";
 import { userRoutes } from "./modules/user/user.routes";
@@ -79,6 +81,9 @@ export const buildApp = () => {
   app.register(connectionRoutes, { prefix: "/connections" });
   app.register(postRoutes, { prefix: "/posts" });
   app.register(messagingRoutes, { prefix: "/messages" });
+  app.register(jobRoutes, { prefix: "/jobs" });
+  app.register(applicationRoutes, { prefix: "/applications" });
+  app.register(notificationRoutes, { prefix: "/notifications" });
 
   return app;
 };

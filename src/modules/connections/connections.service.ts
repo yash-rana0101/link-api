@@ -1,6 +1,8 @@
-import { ConnectionStatus, Prisma } from "@prisma/client";
+import { ConnectionStatus, NotificationType, Prisma } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
+import { NotificationQueueJobData } from "../notification/notification.queue";
+import { QueueService } from "../../services/queue.service";
 import { HttpError } from "../../utils/http-error";
 import { RespondConnectionRequestBody, SendConnectionRequestBody } from "./connections.schema";
 
@@ -31,7 +33,11 @@ type ConnectionRecord = Prisma.ConnectionGetPayload<{
 }>;
 
 export class ConnectionService {
-  constructor(private readonly app: FastifyInstance) { }
+  private readonly queueService: QueueService;
+
+  constructor(private readonly app: FastifyInstance) {
+    this.queueService = new QueueService(app.log);
+  }
 
   async sendRequest(data: SendConnectionRequestBody, requesterId: string): Promise<ConnectionRecord> {
     const normalizedRequesterId = this.normalizeRequiredId(requesterId, "requesterId");
@@ -88,7 +94,7 @@ export class ConnectionService {
     }
 
     try {
-      return await this.app.prisma.connection.create({
+      const connection = await this.app.prisma.connection.create({
         data: {
           requesterId: normalizedRequesterId,
           receiverId: normalizedReceiverId,
@@ -97,6 +103,14 @@ export class ConnectionService {
         },
         select: connectionSelect,
       });
+
+      await this.enqueueNotification({
+        userId: normalizedReceiverId,
+        type: NotificationType.CONNECTION_REQUEST,
+        message: "You received a new connection request.",
+      });
+
+      return connection;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         throw new HttpError(409, "Connection request already exists.");
@@ -141,7 +155,14 @@ export class ConnectionService {
     });
 
     if (updatedConnection.status === ConnectionStatus.ACCEPTED) {
-      await this.enqueueConnectionCreatedEvents(updatedConnection.requesterId, updatedConnection.receiverId);
+      await Promise.all([
+        this.enqueueConnectionCreatedEvents(updatedConnection.requesterId, updatedConnection.receiverId),
+        this.enqueueNotification({
+          userId: updatedConnection.requesterId,
+          type: NotificationType.CONNECTION_ACCEPTED,
+          message: "Your connection request was accepted.",
+        }),
+      ]);
     }
 
     return updatedConnection;
@@ -261,5 +282,20 @@ export class ConnectionService {
         ],
       },
     });
+  }
+
+  private async enqueueNotification(data: NotificationQueueJobData): Promise<void> {
+    try {
+      await this.queueService.addJob(this.app.notificationQueue, "send-notification", data);
+    } catch (error) {
+      this.app.log.error(
+        {
+          err: error,
+          userId: data.userId,
+          type: data.type,
+        },
+        "Failed to enqueue notification for connection event.",
+      );
+    }
   }
 }

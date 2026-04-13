@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { NotificationType, Prisma } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
 import { NotificationQueueJobData } from "../notification/notification.queue";
@@ -121,16 +121,7 @@ export class PostService {
       select: postSummarySelect,
     });
 
-    await Promise.all([
-      this.invalidateFeedCacheForUsers([normalizedUserId], "post_created"),
-      this.enqueueNotification({
-        userId: normalizedUserId,
-        type: "post_created",
-        payload: {
-          postId: post.id,
-        },
-      }),
-    ]);
+    await this.invalidateFeedCacheForUsers([normalizedUserId], "post_created");
 
     return this.mapPostSummary(post);
   }
@@ -267,6 +258,14 @@ export class PostService {
 
     await this.invalidateFeedCacheForUsers([post.userId, normalizedUserId], "post_liked");
 
+    if (liked && post.userId !== normalizedUserId) {
+      await this.enqueueNotification({
+        userId: post.userId,
+        type: NotificationType.POST_LIKED,
+        message: "Your post received a new like.",
+      });
+    }
+
     return {
       postId: normalizedPostId,
       liked,
@@ -291,6 +290,14 @@ export class PostService {
     });
 
     await this.invalidateFeedCacheForUsers([post.userId, normalizedUserId], "post_commented");
+
+    if (post.userId !== normalizedUserId) {
+      await this.enqueueNotification({
+        userId: post.userId,
+        type: NotificationType.POST_COMMENTED,
+        message: "Your post received a new comment.",
+      });
+    }
 
     return comment;
   }

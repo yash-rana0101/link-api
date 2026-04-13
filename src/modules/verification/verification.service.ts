@@ -1,7 +1,8 @@
-import { ExperienceStatus, VerificationStatus } from "@prisma/client";
+import { ExperienceStatus, NotificationType, VerificationStatus } from "@prisma/client";
 import { Queue } from "bullmq";
 import { FastifyBaseLogger } from "fastify";
 
+import { NotificationQueueJobData } from "../notification/notification.queue";
 import { TrustScoreEvent, TrustScoreQueueJobData } from "../trust/trust.queue";
 import { QueueService } from "../../services/queue.service";
 import { HttpError } from "../../utils/http-error";
@@ -46,6 +47,7 @@ export class VerificationService {
     private readonly repository: VerificationRepository,
     private readonly verificationQueue: Queue<VerificationQueueJobData>,
     private readonly trustScoreQueue: Queue<TrustScoreQueueJobData>,
+    private readonly notificationQueue: Queue<NotificationQueueJobData>,
     private readonly rustEngine: RustEngineClient,
     private readonly logger: FastifyBaseLogger,
   ) {
@@ -177,6 +179,14 @@ export class VerificationService {
       trustTriggers.push(this.enqueueTrustRecalculation(latestExperience.userId, "verification_added"));
     }
 
+    if (updatedVerification.status === VerificationStatus.APPROVED && latestExperience.userId !== verifierId) {
+      trustTriggers.push(this.enqueueNotification({
+        userId: latestExperience.userId,
+        type: NotificationType.VERIFICATION_APPROVED,
+        message: "Your experience received a verification approval.",
+      }));
+    }
+
     await Promise.all(trustTriggers);
 
     return {
@@ -303,6 +313,21 @@ export class VerificationService {
           event,
         },
         "Failed to enqueue trust score recalculation.",
+      );
+    }
+  }
+
+  private async enqueueNotification(data: NotificationQueueJobData): Promise<void> {
+    try {
+      await this.queueService.addJob(this.notificationQueue, "send-notification", data);
+    } catch (error) {
+      this.logger.error(
+        {
+          err: error,
+          userId: data.userId,
+          type: data.type,
+        },
+        "Failed to enqueue verification notification.",
       );
     }
   }

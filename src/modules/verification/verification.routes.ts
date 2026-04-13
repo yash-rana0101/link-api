@@ -19,6 +19,7 @@ export const verificationRoutes: FastifyPluginAsync = async (app) => {
     verificationRepository,
     app.verificationQueue,
     app.trustScoreQueue,
+    app.notificationQueue,
     app.rustEngine,
     app.log,
   );

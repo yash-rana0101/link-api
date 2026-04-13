@@ -22,8 +22,11 @@ model User {
   posts         Post[]
   likes         Like[]
   comments      Comment[]
+  notifications Notification[]
   participants  Participant[]
   sentMessages  Message[]      @relation("SentMessages")
+  postedJobs    Job[]
+  applications  Application[]
 }
 
 model Session {
@@ -177,6 +180,51 @@ model Message {
   @@index([conversationId, createdAt])
 }
 
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  message   String
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isRead, createdAt])
+}
+
+model Job {
+  id          String   @id @default(uuid())
+  title       String
+  description String
+  location    String?
+  createdAt   DateTime @default(now())
+  postedById  String
+
+  postedBy     User          @relation(fields: [postedById], references: [id], onDelete: Cascade)
+  applications Application[]
+
+  @@index([postedById])
+  @@index([createdAt])
+}
+
+model Application {
+  id        String            @id @default(uuid())
+  jobId     String
+  userId    String
+  status    ApplicationStatus @default(APPLIED)
+  createdAt DateTime          @default(now())
+
+  job  Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, userId])
+  @@index([jobId])
+  @@index([userId])
+  @@index([status])
+}
+
 enum ExperienceStatus {
   SELF_CLAIMED
   PEER_VERIFIED
@@ -204,10 +252,29 @@ enum ConnectionStatus {
   REJECTED
 }
 
+enum ApplicationStatus {
+  APPLIED
+  SHORTLISTED
+  REJECTED
+  HIRED
+}
+
 enum RelationshipType {
   COWORKER
   TEAMMATE
   INTERVIEWED_WITH
   EVENT
   COLD_OUTREACH
+}
+
+enum NotificationType {
+  CONNECTION_REQUEST
+  CONNECTION_ACCEPTED
+  VERIFICATION_REQUEST
+  VERIFICATION_APPROVED
+  MESSAGE_RECEIVED
+  POST_LIKED
+  POST_COMMENTED
+  JOB_APPLIED
+  APPLICATION_STATUS_UPDATED
 }
