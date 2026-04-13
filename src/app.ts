@@ -3,7 +3,9 @@ import jwt from "@fastify/jwt";
 import Fastify from "fastify";
 
 import { env } from "./config/env";
+import { authRoutes } from "./modules/auth/auth.routes";
 import { healthRoutes } from "./modules/health/health.route";
+import { userRoutes } from "./modules/user/user.routes";
 import loggerPlugin from "./plugins/logger";
 import prismaPlugin from "./plugins/prisma";
 import redisPlugin from "./plugins/redis";
@@ -25,10 +27,34 @@ export const buildApp = () => {
     secret: env.jwtSecret,
   });
 
+  app.decorate("authenticate", async (request, reply) => {
+    try {
+      await request.jwtVerify();
+
+      if (request.user.tokenType !== "access") {
+        reply.status(401).send({
+          success: false,
+          message: "Access token is required.",
+        });
+
+        return;
+      }
+    } catch {
+      reply.status(401).send({
+        success: false,
+        message: "Unauthorized.",
+      });
+
+      return;
+    }
+  });
+
   app.register(loggerPlugin);
   app.register(prismaPlugin);
   app.register(redisPlugin);
   app.register(healthRoutes);
+  app.register(authRoutes, { prefix: "/auth" });
+  app.register(userRoutes, { prefix: "/user" });
 
   return app;
 };

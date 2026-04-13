@@ -11,6 +11,8 @@ if (Number.isNaN(port)) {
 const databaseUrl = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
 const jwtSecret = process.env.JWT_SECRET;
+const accessTokenTtl = process.env.JWT_ACCESS_TTL ?? "15m";
+const refreshTokenTtl = process.env.JWT_REFRESH_TTL ?? "7d";
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required.");
@@ -29,4 +31,6 @@ export const env = {
   databaseUrl,
   redisUrl,
   jwtSecret,
+  accessTokenTtl,
+  refreshTokenTtl,
 };
