@@ -21,6 +21,37 @@ export class UserController {
     }
   };
 
+  getCompleteProfile = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    try {
+      const completeProfile = await this.userService.getCompleteProfile(request.user.sub);
+
+      reply.status(200).send({
+        success: true,
+        data: completeProfile,
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
+  getProfileCompletionGuide = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    try {
+      const completionGuide = await this.userService.getProfileCompletionGuide(request.user.sub);
+
+      reply.status(200).send({
+        success: true,
+        data: completionGuide,
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
   updateProfile = async (
     request: FastifyRequest<{ Body: UpdateProfileBody }>,
     reply: FastifyReply,

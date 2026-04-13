@@ -19,6 +19,18 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/me", { preHandler: [app.authenticate, readRateLimit] }, userController.getMe);
 
+  app.get(
+    "/me/complete",
+    { preHandler: [app.authenticate, readRateLimit] },
+    userController.getCompleteProfile,
+  );
+
+  app.get(
+    "/me/completion-guide",
+    { preHandler: [app.authenticate, readRateLimit] },
+    userController.getProfileCompletionGuide,
+  );
+
   app.patch<{ Body: UpdateProfileBody }>(
     "/update",
     {

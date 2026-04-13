@@ -11,11 +11,16 @@ model User {
   email        String    @unique
   passwordHash String
   name         String?
+  currentRole  String?
+  headline     String?
+  about        String?
+  profileImageUrl String?
   trustScore   Int       @default(0)
   createdAt    DateTime  @default(now())
 
   sessions      Session[]
   experiences   Experience[]
+  skills        Skill[]
   verifications Verification[]
   sentConnections Connection[] @relation("Requester")
   receivedConnections Connection[] @relation("Receiver")
@@ -140,6 +145,18 @@ model Artifact {
   experience Experience @relation(fields: [experienceId], references: [id], onDelete: Cascade)
 
   @@index([experienceId])
+}
+
+model Skill {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@unique([userId, name])
 }
 
 model Conversation {
