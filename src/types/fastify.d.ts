@@ -4,13 +4,17 @@ import { Queue } from "bullmq";
 import { FastifyReply, FastifyRequest } from "fastify";
 import Redis from "ioredis";
 
+import { TrustScoreQueueJobData } from "../modules/trust/trust.queue";
 import { VerificationQueueJobData } from "../modules/verification/verification.queue";
+import { RustEngineClient } from "../utils/rust-engine-client";
 
 declare module "fastify" {
   interface FastifyInstance {
     prisma: PrismaClient;
     redis: Redis;
     verificationQueue: Queue<VerificationQueueJobData>;
+    trustScoreQueue: Queue<TrustScoreQueueJobData>;
+    rustEngine: RustEngineClient;
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }

@@ -6,11 +6,14 @@ import { env } from "./config/env";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { experienceRoutes } from "./modules/experience/experience.routes";
 import { healthRoutes } from "./modules/health/health.route";
+import { trustRoutes } from "./modules/trust/trust.routes";
 import { userRoutes } from "./modules/user/user.routes";
 import { verificationRoutes } from "./modules/verification/verification.routes";
 import loggerPlugin from "./plugins/logger";
 import prismaPlugin from "./plugins/prisma";
 import redisPlugin from "./plugins/redis";
+import rustEnginePlugin from "./plugins/rustEngine";
+import trustScoreQueuePlugin from "./plugins/trust-score-queue";
 import verificationQueuePlugin from "./plugins/verification-queue";
 
 export const buildApp = () => {
@@ -55,9 +58,12 @@ export const buildApp = () => {
   app.register(loggerPlugin);
   app.register(prismaPlugin);
   app.register(redisPlugin);
+  app.register(rustEnginePlugin);
   app.register(verificationQueuePlugin);
+  app.register(trustScoreQueuePlugin);
   app.register(healthRoutes);
   app.register(authRoutes, { prefix: "/auth" });
+  app.register(trustRoutes, { prefix: "/internal/trust" });
   app.register(userRoutes, { prefix: "/user" });
   app.register(experienceRoutes, { prefix: "/experience" });
   app.register(verificationRoutes, { prefix: "/verification" });

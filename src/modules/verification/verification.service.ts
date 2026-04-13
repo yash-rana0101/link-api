@@ -1,12 +1,17 @@
 import { ExperienceStatus, VerificationStatus } from "@prisma/client";
 import { Queue } from "bullmq";
+import { FastifyBaseLogger } from "fastify";
 
+import { TrustScoreEvent, TrustScoreQueueJobData } from "../trust/trust.queue";
 import { HttpError } from "../../utils/http-error";
+import { RustEngineClient } from "../../utils/rust-engine-client";
 import { VerificationQueueJobData } from "./verification.queue";
 import { VerificationRecord, VerificationRepository } from "./verification.repository";
 import { RequestVerificationBody, RespondVerificationBody } from "./verification.schema";
 
 const MIN_APPROVALS_REQUIRED = 2;
+
+type VerificationResolutionSource = "rust" | "fallback";
 
 export interface RequestVerificationResult {
   experienceId: string;
@@ -20,6 +25,9 @@ export interface RespondVerificationResult {
   approvalsRequired: number;
   approvalsReceived: number;
   consensusReached: boolean;
+  experienceStatus: ExperienceStatus;
+  resolutionSource: VerificationResolutionSource;
+  trustScore: number | null;
 }
 
 export interface VerificationSummaryResult {
@@ -34,6 +42,9 @@ export class VerificationService {
   constructor(
     private readonly repository: VerificationRepository,
     private readonly verificationQueue: Queue<VerificationQueueJobData>,
+    private readonly trustScoreQueue: Queue<TrustScoreQueueJobData>,
+    private readonly rustEngine: RustEngineClient,
+    private readonly logger: FastifyBaseLogger,
   ) { }
 
   async requestVerification(data: RequestVerificationBody, requesterId: string): Promise<RequestVerificationResult> {
@@ -117,19 +128,60 @@ export class VerificationService {
 
     const updatedVerification = await this.repository.updateVerificationStatus(existingVerification.id, data.status);
 
-    const approvalsReceived = await this.repository.countApprovedVerifications(experienceId);
-    const consensusReached = approvalsReceived >= MIN_APPROVALS_REQUIRED;
+    const experience = await this.repository.findExperienceById(experienceId);
 
-    if (consensusReached) {
+    if (!experience) {
+      throw new HttpError(404, "Experience not found.");
+    }
+
+    const [approvalsReceived, rejectionsReceived, hasArtifact] = await Promise.all([
+      this.repository.countApprovedVerifications(experienceId),
+      this.repository.countRejectedVerifications(experienceId),
+      this.repository.hasArtifacts(experienceId),
+    ]);
+
+    const resolution = await this.resolveExperienceStatus({
+      approvalsReceived,
+      rejectionsReceived,
+      hasArtifact,
+    });
+
+    if (resolution.experienceStatus === ExperienceStatus.PEER_VERIFIED) {
       await this.repository.promoteExperienceToPeerVerified(experienceId);
     }
+
+    if (resolution.experienceStatus === ExperienceStatus.FLAGGED) {
+      await this.repository.flagExperience(experienceId);
+    }
+
+    const latestExperience = await this.repository.findExperienceById(experienceId);
+
+    if (!latestExperience) {
+      throw new HttpError(404, "Experience not found.");
+    }
+
+    const trustTriggers: Array<Promise<void>> = [];
+
+    if (
+      experience.status !== ExperienceStatus.PEER_VERIFIED
+      && latestExperience.status === ExperienceStatus.PEER_VERIFIED
+    ) {
+      trustTriggers.push(this.enqueueTrustRecalculation(latestExperience.userId, "experience_verified"));
+    } else if (updatedVerification.status === VerificationStatus.APPROVED) {
+      trustTriggers.push(this.enqueueTrustRecalculation(latestExperience.userId, "verification_added"));
+    }
+
+    await Promise.all(trustTriggers);
 
     return {
       experienceId,
       verificationStatus: updatedVerification.status,
       approvalsRequired: MIN_APPROVALS_REQUIRED,
       approvalsReceived,
-      consensusReached,
+      consensusReached: resolution.consensusReached,
+      experienceStatus: latestExperience.status,
+      resolutionSource: resolution.source,
+      trustScore: null,
     };
   }
 
@@ -170,5 +222,82 @@ export class VerificationService {
     }
 
     return Array.from(uniqueVerifierIds);
+  }
+
+  private async resolveExperienceStatus(input: {
+    approvalsReceived: number;
+    rejectionsReceived: number;
+    hasArtifact: boolean;
+  }): Promise<{
+    experienceStatus: ExperienceStatus;
+    consensusReached: boolean;
+    source: VerificationResolutionSource;
+  }> {
+    try {
+      const rustResult = await this.rustEngine.resolveVerification({
+        confirmations: input.approvalsReceived,
+        min_confirmations: MIN_APPROVALS_REQUIRED,
+        artifact: input.hasArtifact,
+        rejections: input.rejectionsReceived,
+      });
+
+      const mappedStatus = this.mapRustStatusToExperienceStatus(rustResult.status);
+
+      return {
+        experienceStatus: mappedStatus,
+        consensusReached: rustResult.consensus_reached || mappedStatus === ExperienceStatus.PEER_VERIFIED,
+        source: "rust",
+      };
+    } catch (error) {
+      this.logger.error(
+        {
+          err: error,
+          approvalsReceived: input.approvalsReceived,
+          rejectionsReceived: input.rejectionsReceived,
+        },
+        "Rust verification resolution failed. Falling back to local consensus.",
+      );
+
+      const consensusReached = input.approvalsReceived >= MIN_APPROVALS_REQUIRED;
+
+      return {
+        experienceStatus: consensusReached ? ExperienceStatus.PEER_VERIFIED : ExperienceStatus.SELF_CLAIMED,
+        consensusReached,
+        source: "fallback",
+      };
+    }
+  }
+
+  private mapRustStatusToExperienceStatus(status: string): ExperienceStatus {
+    switch (status) {
+      case ExperienceStatus.PEER_VERIFIED:
+        return ExperienceStatus.PEER_VERIFIED;
+      case ExperienceStatus.SELF_CLAIMED:
+        return ExperienceStatus.SELF_CLAIMED;
+      case ExperienceStatus.FLAGGED:
+        return ExperienceStatus.FLAGGED;
+      case ExperienceStatus.FULLY_VERIFIED:
+        return ExperienceStatus.FULLY_VERIFIED;
+      default:
+        throw new Error(`Unsupported verification status from Rust: ${status}.`);
+    }
+  }
+
+  private async enqueueTrustRecalculation(userId: string, event: TrustScoreEvent): Promise<void> {
+    try {
+      await this.trustScoreQueue.add("trust-score-recalculate", {
+        userId,
+        event,
+      });
+    } catch (error) {
+      this.logger.error(
+        {
+          err: error,
+          userId,
+          event,
+        },
+        "Failed to enqueue trust score recalculation.",
+      );
+    }
   }
 }

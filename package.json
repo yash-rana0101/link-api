@@ -7,7 +7,9 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "prisma:generate": "prisma generate --config prisma.config.ts"
+    "prisma:generate": "prisma generate --config prisma.config.ts",
+    "rust:dev": "cargo run --manifest-path rust-service/Cargo.toml",
+    "rust:build": "cargo build --manifest-path rust-service/Cargo.toml"
   },
   "keywords": [],
   "author": "",

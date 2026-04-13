@@ -14,7 +14,13 @@ import { VerificationService } from "./verification.service";
 
 export const verificationRoutes: FastifyPluginAsync = async (app) => {
   const verificationRepository = new VerificationRepository(app);
-  const verificationService = new VerificationService(verificationRepository, app.verificationQueue);
+  const verificationService = new VerificationService(
+    verificationRepository,
+    app.verificationQueue,
+    app.trustScoreQueue,
+    app.rustEngine,
+    app.log,
+  );
   const verificationController = new VerificationController(verificationService);
 
   app.post<{ Body: RequestVerificationBody }>(

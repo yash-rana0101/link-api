@@ -131,6 +131,25 @@ export class VerificationRepository {
     });
   }
 
+  countRejectedVerifications(experienceId: string): Promise<number> {
+    return this.app.prisma.verification.count({
+      where: {
+        experienceId,
+        status: VerificationStatus.REJECTED,
+      },
+    });
+  }
+
+  async hasArtifacts(experienceId: string): Promise<boolean> {
+    const count = await this.app.prisma.artifact.count({
+      where: {
+        experienceId,
+      },
+    });
+
+    return count > 0;
+  }
+
   async promoteExperienceToPeerVerified(experienceId: string): Promise<void> {
     await this.app.prisma.experience.updateMany({
       where: {
@@ -139,6 +158,50 @@ export class VerificationRepository {
       },
       data: {
         status: ExperienceStatus.PEER_VERIFIED,
+      },
+    });
+  }
+
+  async flagExperience(experienceId: string): Promise<void> {
+    await this.app.prisma.experience.updateMany({
+      where: {
+        id: experienceId,
+      },
+      data: {
+        status: ExperienceStatus.FLAGGED,
+      },
+    });
+  }
+
+  countVerifiedExperiencesForUser(userId: string): Promise<number> {
+    return this.app.prisma.experience.count({
+      where: {
+        userId,
+        status: {
+          in: [ExperienceStatus.PEER_VERIFIED, ExperienceStatus.FULLY_VERIFIED],
+        },
+      },
+    });
+  }
+
+  countPeerConfirmationsForUser(userId: string): Promise<number> {
+    return this.app.prisma.verification.count({
+      where: {
+        status: VerificationStatus.APPROVED,
+        experience: {
+          userId,
+        },
+      },
+    });
+  }
+
+  async updateUserTrustScore(userId: string, trustScore: number): Promise<void> {
+    await this.app.prisma.user.updateMany({
+      where: {
+        id: userId,
+      },
+      data: {
+        trustScore,
       },
     });
   }
