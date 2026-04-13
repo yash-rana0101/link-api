@@ -10,15 +10,14 @@ const rustEnginePlugin: FastifyPluginAsync = fp(async (app) => {
   app.decorate("rustEngine", rustEngine);
 
   try {
-    await rustEngine.healthcheck();
+    await rustEngine.healthcheck({ silent: true });
     app.log.info({ rustServiceUrl: env.rustServiceUrl }, "Rust trust engine is reachable.");
-  } catch (error) {
-    app.log.warn(
+  } catch {
+    app.log.info(
       {
-        err: error,
         rustServiceUrl: env.rustServiceUrl,
       },
-      "Rust trust engine is unreachable at startup. Falling back to safe Node behavior.",
+      "Rust trust engine is not running at startup. Continuing with fallback behavior.",
     );
   }
 });

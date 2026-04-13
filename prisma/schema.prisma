@@ -17,6 +17,8 @@ model User {
   sessions     Session[]
   experiences  Experience[]
   verifications Verification[]
+  sentConnections Connection[] @relation("Requester")
+  receivedConnections Connection[] @relation("Receiver")
 }
 
 model Session {
@@ -64,6 +66,22 @@ model Verification {
   @@unique([experienceId, verifierId])
 }
 
+model Connection {
+  id           String           @id @default(uuid())
+  requesterId  String
+  receiverId   String
+  relationship RelationshipType
+  status       ConnectionStatus @default(PENDING)
+  createdAt    DateTime         @default(now())
+
+  requester User @relation("Requester", fields: [requesterId], references: [id], onDelete: Cascade)
+  receiver  User @relation("Receiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, receiverId])
+  @@index([requesterId])
+  @@index([receiverId])
+}
+
 model Artifact {
   id           String       @id @default(uuid())
   experienceId String
@@ -95,4 +113,18 @@ enum VerificationStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+enum ConnectionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum RelationshipType {
+  COWORKER
+  TEAMMATE
+  INTERVIEWED_WITH
+  EVENT
+  COLD_OUTREACH
 }
