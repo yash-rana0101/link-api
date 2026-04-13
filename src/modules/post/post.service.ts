@@ -1,4 +1,4 @@
-import { NotificationType, Prisma } from "@prisma/client";
+import { ConnectionStatus, NotificationType, Prisma } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
 import { NotificationQueueJobData } from "../notification/notification.queue";
@@ -8,8 +8,8 @@ import { HttpError } from "../../utils/http-error";
 import { AddCommentBody, CreatePostBody, FeedQuerystring } from "./post.schema";
 import { FeedQueueJobData } from "./feed.queue";
 
-const FEED_CACHE_TTL_SECONDS = 60;
 const FEED_CACHE_PREFIX = "feed";
+const FEED_CACHE_MAX_ITEMS = 100;
 
 const userSummarySelect = {
   id: true,
@@ -121,7 +121,7 @@ export class PostService {
       select: postSummarySelect,
     });
 
-    await this.invalidateFeedCacheForUsers([normalizedUserId], "post_created");
+    await this.enqueueFeedPostCreated(post.id, normalizedUserId, post.createdAt, "post_created");
 
     return this.mapPostSummary(post);
   }
@@ -130,45 +130,27 @@ export class PostService {
     const normalizedUserId = this.normalizeRequiredId(userId, "userId");
     const cursorDate = this.parseCursor(query.cursor);
     const limit = this.parseLimit(query.limit);
-    const cacheKey = this.buildFeedCacheKey(normalizedUserId, cursorDate, limit);
+    const cachedPostIds = await this.getCachedFeedPostIds(normalizedUserId);
 
-    const cachedFeed = await this.cacheService.get<FeedResult>(cacheKey);
+    if (cachedPostIds.length > 0) {
+      const cachedPosts = await this.getOrderedPostsByIds(cachedPostIds);
+      const feedFromCache = this.paginateFeedItems(cachedPosts, cursorDate, limit);
 
-    if (cachedFeed) {
-      return this.hydrateFeedDates(cachedFeed);
+      if (feedFromCache.items.length > 0) {
+        return feedFromCache;
+      }
     }
 
-    const posts = await this.app.prisma.post.findMany({
-      where: cursorDate
-        ? {
-          createdAt: {
-            lt: cursorDate,
-          },
-        }
-        : undefined,
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: limit + 1,
-      select: postSummarySelect,
-    });
+    const fallbackFeed = await this.getFeedFromDatabase(normalizedUserId, cursorDate, limit);
 
-    const hasMore = posts.length > limit;
-    const pageItems = hasMore ? posts.slice(0, limit) : posts;
-    const mappedItems = pageItems.map((post) => this.mapPostSummary(post));
+    if (!cursorDate && fallbackFeed.items.length > 0) {
+      await this.storeFeedPostIds(
+        normalizedUserId,
+        fallbackFeed.items.map((item) => item.id),
+      );
+    }
 
-    const feedResult: FeedResult = {
-      items: mappedItems,
-      pageInfo: {
-        hasMore,
-        limit,
-        nextCursor: hasMore && mappedItems.length > 0
-          ? mappedItems[mappedItems.length - 1].createdAt.toISOString()
-          : null,
-      },
-    };
-
-    await this.cacheService.set(cacheKey, feedResult, FEED_CACHE_TTL_SECONDS);
-
-    return feedResult;
+    return fallbackFeed;
   }
 
   async getPostById(postId: string): Promise<PostDetailsRecord> {
@@ -204,7 +186,7 @@ export class PostService {
       },
     });
 
-    await this.invalidateFeedCacheForUsers([post.userId], "post_deleted");
+    await this.enqueueFeedPostDeleted(normalizedPostId, post.userId, "post_deleted");
   }
 
   async likePost(postId: string, userId: string): Promise<LikeResult> {
@@ -256,8 +238,6 @@ export class PostService {
       },
     });
 
-    await this.invalidateFeedCacheForUsers([post.userId, normalizedUserId], "post_liked");
-
     if (liked && post.userId !== normalizedUserId) {
       await this.enqueueNotification({
         userId: post.userId,
@@ -289,8 +269,6 @@ export class PostService {
       select: commentSelect,
     });
 
-    await this.invalidateFeedCacheForUsers([post.userId, normalizedUserId], "post_commented");
-
     if (post.userId !== normalizedUserId) {
       await this.enqueueNotification({
         userId: post.userId,
@@ -302,42 +280,201 @@ export class PostService {
     return comment;
   }
 
-  private buildFeedCacheKey(userId: string, cursor: Date | undefined, limit: number): string {
-    const cursorToken = cursor ? cursor.toISOString() : "first";
-
-    return `${FEED_CACHE_PREFIX}:${userId}:cursor:${cursorToken}:limit:${limit}`;
+  private buildFeedListKey(userId: string): string {
+    return `${FEED_CACHE_PREFIX}:${userId}`;
   }
 
-  private hydrateFeedDates(feed: FeedResult): FeedResult {
-    return {
-      ...feed,
-      items: feed.items.map((item) => ({
-        ...item,
-        createdAt: new Date(item.createdAt),
-      })),
-    };
+  private async getCachedFeedPostIds(userId: string): Promise<string[]> {
+    try {
+      const cachedPostIds = await this.app.redis.lrange(this.buildFeedListKey(userId), 0, FEED_CACHE_MAX_ITEMS - 1);
+
+      return Array.from(new Set(cachedPostIds.map((postId) => postId.trim()).filter(Boolean)));
+    } catch (error) {
+      this.app.log.warn({ err: error, userId }, "Failed to read precomputed feed from cache.");
+      return [];
+    }
   }
 
-  private async invalidateFeedCacheForUsers(userIds: string[], source: string): Promise<void> {
-    const normalizedUserIds = Array.from(new Set(userIds.map((userId) => userId.trim()).filter(Boolean)));
+  private async storeFeedPostIds(userId: string, postIds: string[]): Promise<void> {
+    const normalizedPostIds = Array.from(new Set(postIds.map((postId) => postId.trim()).filter(Boolean))).slice(
+      0,
+      FEED_CACHE_MAX_ITEMS,
+    );
 
-    if (!normalizedUserIds.length) {
+    if (!normalizedPostIds.length) {
       return;
     }
 
-    await Promise.all(normalizedUserIds.map(async (targetUserId) => {
-      const jobData: FeedQueueJobData = {
-        action: "invalidate_user_feed",
-        userId: targetUserId,
-        source,
-      };
+    const feedKey = this.buildFeedListKey(userId);
 
-      try {
-        await this.queueService.addJob(this.app.feedQueue, "feed-cache-invalidate", jobData);
-      } catch {
-        await this.cacheService.delByPattern(`${FEED_CACHE_PREFIX}:${targetUserId}:*`);
+    try {
+      const pipeline = this.app.redis.pipeline();
+      pipeline.del(feedKey);
+      pipeline.rpush(feedKey, ...normalizedPostIds);
+      pipeline.ltrim(feedKey, 0, FEED_CACHE_MAX_ITEMS - 1);
+      await pipeline.exec();
+    } catch (error) {
+      this.app.log.warn({ err: error, userId }, "Failed to warm precomputed feed cache.");
+    }
+  }
+
+  private async getOrderedPostsByIds(postIds: string[]): Promise<PostSummaryRecord[]> {
+    if (!postIds.length) {
+      return [];
+    }
+
+    const rows = await this.app.prisma.post.findMany({
+      where: {
+        id: {
+          in: postIds,
+        },
+      },
+      select: postSummarySelect,
+    });
+
+    const mappedById = new Map(rows.map((row) => [row.id, this.mapPostSummary(row)]));
+    const orderedPosts: PostSummaryRecord[] = [];
+
+    for (const postId of postIds) {
+      const mappedPost = mappedById.get(postId);
+
+      if (mappedPost) {
+        orderedPosts.push(mappedPost);
       }
-    }));
+    }
+
+    return orderedPosts;
+  }
+
+  private async getFeedFromDatabase(userId: string, cursorDate: Date | undefined, limit: number): Promise<FeedResult> {
+    const feedAuthorIds = await this.getFeedAuthorIds(userId);
+
+    const rows = await this.app.prisma.post.findMany({
+      where: {
+        userId: {
+          in: feedAuthorIds,
+        },
+        ...(cursorDate
+          ? {
+            createdAt: {
+              lt: cursorDate,
+            },
+          }
+          : {}),
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      select: postSummarySelect,
+    });
+
+    const hasMore = rows.length > limit;
+    const pageItems = hasMore ? rows.slice(0, limit) : rows;
+    const mappedItems = pageItems.map((row) => this.mapPostSummary(row));
+
+    return {
+      items: mappedItems,
+      pageInfo: {
+        hasMore,
+        limit,
+        nextCursor: hasMore && mappedItems.length > 0
+          ? mappedItems[mappedItems.length - 1].createdAt.toISOString()
+          : null,
+      },
+    };
+  }
+
+  private paginateFeedItems(items: PostSummaryRecord[], cursorDate: Date | undefined, limit: number): FeedResult {
+    const filteredItems = cursorDate
+      ? items.filter((item) => item.createdAt < cursorDate)
+      : items;
+    const hasMore = filteredItems.length > limit;
+    const pageItems = hasMore ? filteredItems.slice(0, limit) : filteredItems.slice(0, limit);
+
+    return {
+      items: pageItems,
+      pageInfo: {
+        hasMore,
+        limit,
+        nextCursor: hasMore && pageItems.length > 0
+          ? pageItems[pageItems.length - 1].createdAt.toISOString()
+          : null,
+      },
+    };
+  }
+
+  private async getFeedAuthorIds(userId: string): Promise<string[]> {
+    const connections = await this.app.prisma.connection.findMany({
+      where: {
+        status: ConnectionStatus.ACCEPTED,
+        OR: [
+          { requesterId: userId },
+          { receiverId: userId },
+        ],
+      },
+      select: {
+        requesterId: true,
+        receiverId: true,
+      },
+    });
+
+    const authorIds = new Set<string>([userId]);
+
+    for (const connection of connections) {
+      authorIds.add(connection.requesterId);
+      authorIds.add(connection.receiverId);
+    }
+
+    return Array.from(authorIds);
+  }
+
+  private async enqueueFeedPostCreated(
+    postId: string,
+    authorId: string,
+    createdAt: Date,
+    source: string,
+  ): Promise<void> {
+    const jobData: FeedQueueJobData = {
+      action: "fanout_post_created",
+      authorId,
+      postId,
+      createdAt: createdAt.toISOString(),
+      source,
+    };
+
+    try {
+      await this.queueService.addJob(this.app.feedQueue, "feed-post-created", jobData);
+    } catch {
+      await this.pushPostToOwnFeed(authorId, postId);
+    }
+  }
+
+  private async enqueueFeedPostDeleted(postId: string, authorId: string, source: string): Promise<void> {
+    const jobData: FeedQueueJobData = {
+      action: "remove_post_from_feeds",
+      authorId,
+      postId,
+      source,
+    };
+
+    try {
+      await this.queueService.addJob(this.app.feedQueue, "feed-post-deleted", jobData);
+    } catch {
+      await this.cacheService.delByPattern(`${FEED_CACHE_PREFIX}:*`);
+    }
+  }
+
+  private async pushPostToOwnFeed(userId: string, postId: string): Promise<void> {
+    const feedKey = this.buildFeedListKey(userId);
+
+    try {
+      const pipeline = this.app.redis.pipeline();
+      pipeline.lrem(feedKey, 0, postId);
+      pipeline.lpush(feedKey, postId);
+      pipeline.ltrim(feedKey, 0, FEED_CACHE_MAX_ITEMS - 1);
+      await pipeline.exec();
+    } catch (error) {
+      this.app.log.warn({ err: error, userId, postId }, "Failed to push post into self feed cache fallback.");
+    }
   }
 
   private async enqueueNotification(data: NotificationQueueJobData): Promise<void> {
