@@ -14,14 +14,16 @@ model User {
   trustScore   Int       @default(0)
   createdAt    DateTime  @default(now())
 
-  sessions     Session[]
-  experiences  Experience[]
+  sessions      Session[]
+  experiences   Experience[]
   verifications Verification[]
   sentConnections Connection[] @relation("Requester")
   receivedConnections Connection[] @relation("Receiver")
-  posts       Post[]
-  likes       Like[]
-  comments    Comment[]
+  posts         Post[]
+  likes         Like[]
+  comments      Comment[]
+  participants  Participant[]
+  sentMessages  Message[]      @relation("SentMessages")
 }
 
 model Session {
@@ -135,6 +137,44 @@ model Artifact {
   experience Experience @relation(fields: [experienceId], references: [id], onDelete: Cascade)
 
   @@index([experienceId])
+}
+
+model Conversation {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  participants Participant[]
+  messages     Message[]
+
+  @@index([createdAt])
+}
+
+model Participant {
+  id             String @id @default(uuid())
+  userId         String
+  conversationId String
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationId])
+  @@index([userId])
+  @@index([conversationId])
+}
+
+model Message {
+  id             String   @id @default(uuid())
+  senderId       String
+  conversationId String
+  content        String
+  createdAt      DateTime @default(now())
+
+  sender       User         @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([senderId])
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
 }
 
 enum ExperienceStatus {

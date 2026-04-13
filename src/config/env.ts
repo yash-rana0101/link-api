@@ -4,6 +4,17 @@ dotenv.config();
 
 const port = Number(process.env.PORT ?? 4000);
 const rustServiceUrlRaw = process.env.RUST_SERVICE_URL ?? "http://localhost:5000";
+const redisRequired = parseBooleanEnv(process.env.REDIS_REQUIRED, false, "REDIS_REQUIRED");
+const redisConnectRetries = parseNonNegativeIntEnv(
+  process.env.REDIS_CONNECT_RETRIES,
+  8,
+  "REDIS_CONNECT_RETRIES",
+);
+const redisConnectDelayMs = parsePositiveIntEnv(
+  process.env.REDIS_CONNECT_DELAY_MS,
+  1000,
+  "REDIS_CONNECT_DELAY_MS",
+);
 
 const normalizeUrl = (value: string, envKey: string): string => {
   try {
@@ -40,8 +51,57 @@ export const env = {
   port,
   databaseUrl,
   redisUrl,
+  redisRequired,
+  redisConnectRetries,
+  redisConnectDelayMs,
   jwtSecret,
   accessTokenTtl,
   refreshTokenTtl,
   rustServiceUrl,
 };
+
+function parseBooleanEnv(value: string | undefined, defaultValue: boolean, key: string): boolean {
+  if (typeof value === "undefined") {
+    return defaultValue;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`${key} must be a boolean value.`);
+}
+
+function parseNonNegativeIntEnv(value: string | undefined, defaultValue: number, key: string): number {
+  if (typeof value === "undefined") {
+    return defaultValue;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${key} must be a non-negative integer.`);
+  }
+
+  return parsed;
+}
+
+function parsePositiveIntEnv(value: string | undefined, defaultValue: number, key: string): number {
+  if (typeof value === "undefined") {
+    return defaultValue;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${key} must be a positive integer.`);
+  }
+
+  return parsed;
+}

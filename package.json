@@ -5,8 +5,11 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "dev:infra": "npm run infra:up && npm run dev",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
+    "infra:up": "docker compose up -d postgres redis rust-service",
+    "infra:down": "docker compose down",
     "prisma:generate": "prisma generate --config prisma.config.ts",
     "rust:dev": "cargo run --manifest-path rust-service/Cargo.toml",
     "rust:build": "cargo build --manifest-path rust-service/Cargo.toml"
@@ -28,7 +31,8 @@
     "ioredis": "^5.10.1",
     "pg": "^8.20.0",
     "pino": "^10.3.1",
-    "prisma": "^7.7.0"
+    "prisma": "^7.7.0",
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

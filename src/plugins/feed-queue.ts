@@ -6,12 +6,15 @@ import Redis from "ioredis";
 import { env } from "../config/env";
 import { FEED_QUEUE_NAME, FeedQueueJobData } from "../modules/post/feed.queue";
 import { createDisabledQueue } from "../services/disabled-queue.service";
+import { connectRedisWithRetry, getRedisErrorMessage } from "../utils/redis-startup";
 import { processFeedJob } from "../workers/feed.worker";
 
 const feedQueuePlugin: FastifyPluginAsync = fp(async (app) => {
   let queueConnection: Redis | null = null;
   let workerConnection: Redis | null = null;
   let feedWorker: Worker<FeedQueueJobData> | null = null;
+  let isQueueConnectionReady = false;
+  let isWorkerConnectionReady = false;
   let feedQueue: Queue<FeedQueueJobData> = createDisabledQueue(FEED_QUEUE_NAME, app.log);
 
   try {
@@ -28,14 +31,40 @@ const feedQueuePlugin: FastifyPluginAsync = fp(async (app) => {
     });
 
     queueConnection.on("error", (error) => {
+      if (!isQueueConnectionReady) {
+        app.log.debug({ reason: getRedisErrorMessage(error) }, "Feed queue Redis is unavailable during startup.");
+        return;
+      }
+
       app.log.error({ err: error }, "Feed queue Redis connection error");
     });
 
     workerConnection.on("error", (error) => {
+      if (!isWorkerConnectionReady) {
+        app.log.debug({ reason: getRedisErrorMessage(error) }, "Feed worker Redis is unavailable during startup.");
+        return;
+      }
+
       app.log.error({ err: error }, "Feed worker Redis connection error");
     });
 
-    await Promise.all([queueConnection.connect(), workerConnection.connect()]);
+    await Promise.all([
+      connectRedisWithRetry(queueConnection, {
+        logger: app.log,
+        label: "Feed queue Redis",
+        retries: env.redisConnectRetries,
+        delayMs: env.redisConnectDelayMs,
+      }),
+      connectRedisWithRetry(workerConnection, {
+        logger: app.log,
+        label: "Feed worker Redis",
+        retries: env.redisConnectRetries,
+        delayMs: env.redisConnectDelayMs,
+      }),
+    ]);
+
+    isQueueConnectionReady = true;
+    isWorkerConnectionReady = true;
 
     feedQueue = new Queue<FeedQueueJobData>(FEED_QUEUE_NAME, {
       connection: queueConnection,
@@ -74,9 +103,13 @@ const feedQueuePlugin: FastifyPluginAsync = fp(async (app) => {
 
     await feedWorker.waitUntilReady();
   } catch (error) {
+    if (env.redisRequired) {
+      throw new Error(`Feed queue requires Redis: ${getRedisErrorMessage(error)}`);
+    }
+
     app.log.warn(
       {
-        err: error,
+        reason: getRedisErrorMessage(error),
       },
       "Feed queue is disabled because Redis is unavailable.",
     );

@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { Queue } from "bullmq";
 import { FastifyReply, FastifyRequest } from "fastify";
 import Redis from "ioredis";
+import { Server } from "socket.io";
 
 import { NotificationQueueJobData } from "../modules/notification/notification.queue";
 import { FeedQueueJobData } from "../modules/post/feed.queue";
@@ -19,6 +20,7 @@ declare module "fastify" {
     verificationQueue: Queue<VerificationQueueJobData>;
     trustScoreQueue: Queue<TrustScoreQueueJobData>;
     rustEngine: RustEngineClient;
+    io: Server;
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }

@@ -6,12 +6,15 @@ import Redis from "ioredis";
 import { env } from "../config/env";
 import { NOTIFICATION_QUEUE_NAME, NotificationQueueJobData } from "../modules/notification/notification.queue";
 import { createDisabledQueue } from "../services/disabled-queue.service";
+import { connectRedisWithRetry, getRedisErrorMessage } from "../utils/redis-startup";
 import { processNotificationJob } from "../workers/notification.worker";
 
 const notificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
   let queueConnection: Redis | null = null;
   let workerConnection: Redis | null = null;
   let notificationWorker: Worker<NotificationQueueJobData> | null = null;
+  let isQueueConnectionReady = false;
+  let isWorkerConnectionReady = false;
   let notificationQueue: Queue<NotificationQueueJobData> = createDisabledQueue(
     NOTIFICATION_QUEUE_NAME,
     app.log,
@@ -31,14 +34,40 @@ const notificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
     });
 
     queueConnection.on("error", (error) => {
+      if (!isQueueConnectionReady) {
+        app.log.debug({ reason: getRedisErrorMessage(error) }, "Notification queue Redis is unavailable during startup.");
+        return;
+      }
+
       app.log.error({ err: error }, "Notification queue Redis connection error");
     });
 
     workerConnection.on("error", (error) => {
+      if (!isWorkerConnectionReady) {
+        app.log.debug({ reason: getRedisErrorMessage(error) }, "Notification worker Redis is unavailable during startup.");
+        return;
+      }
+
       app.log.error({ err: error }, "Notification worker Redis connection error");
     });
 
-    await Promise.all([queueConnection.connect(), workerConnection.connect()]);
+    await Promise.all([
+      connectRedisWithRetry(queueConnection, {
+        logger: app.log,
+        label: "Notification queue Redis",
+        retries: env.redisConnectRetries,
+        delayMs: env.redisConnectDelayMs,
+      }),
+      connectRedisWithRetry(workerConnection, {
+        logger: app.log,
+        label: "Notification worker Redis",
+        retries: env.redisConnectRetries,
+        delayMs: env.redisConnectDelayMs,
+      }),
+    ]);
+
+    isQueueConnectionReady = true;
+    isWorkerConnectionReady = true;
 
     notificationQueue = new Queue<NotificationQueueJobData>(NOTIFICATION_QUEUE_NAME, {
       connection: queueConnection,
@@ -77,9 +106,13 @@ const notificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
 
     await notificationWorker.waitUntilReady();
   } catch (error) {
+    if (env.redisRequired) {
+      throw new Error(`Notification queue requires Redis: ${getRedisErrorMessage(error)}`);
+    }
+
     app.log.warn(
       {
-        err: error,
+        reason: getRedisErrorMessage(error),
       },
       "Notification queue is disabled because Redis is unavailable.",
     );

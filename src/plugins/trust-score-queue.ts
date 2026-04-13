@@ -8,12 +8,15 @@ import { TRUST_SCORE_QUEUE_NAME, TrustScoreQueueJobData } from "../modules/trust
 import { TrustRepository } from "../modules/trust/trust.repository";
 import { TrustService } from "../modules/trust/trust.service";
 import { createDisabledQueue } from "../services/disabled-queue.service";
+import { connectRedisWithRetry, getRedisErrorMessage } from "../utils/redis-startup";
 import { processTrustScoreJob } from "../workers/trust.worker";
 
 const trustScoreQueuePlugin: FastifyPluginAsync = fp(async (app) => {
   let queueConnection: Redis | null = null;
   let workerConnection: Redis | null = null;
   let trustScoreWorker: Worker<TrustScoreQueueJobData> | null = null;
+  let isQueueConnectionReady = false;
+  let isWorkerConnectionReady = false;
   let trustScoreQueue: Queue<TrustScoreQueueJobData> = createDisabledQueue(TRUST_SCORE_QUEUE_NAME, app.log);
 
   const trustRepository = new TrustRepository(app);
@@ -33,14 +36,40 @@ const trustScoreQueuePlugin: FastifyPluginAsync = fp(async (app) => {
     });
 
     queueConnection.on("error", (error) => {
+      if (!isQueueConnectionReady) {
+        app.log.debug({ reason: getRedisErrorMessage(error) }, "Trust score queue Redis is unavailable during startup.");
+        return;
+      }
+
       app.log.error({ err: error }, "Trust score queue Redis connection error");
     });
 
     workerConnection.on("error", (error) => {
+      if (!isWorkerConnectionReady) {
+        app.log.debug({ reason: getRedisErrorMessage(error) }, "Trust score worker Redis is unavailable during startup.");
+        return;
+      }
+
       app.log.error({ err: error }, "Trust score worker Redis connection error");
     });
 
-    await Promise.all([queueConnection.connect(), workerConnection.connect()]);
+    await Promise.all([
+      connectRedisWithRetry(queueConnection, {
+        logger: app.log,
+        label: "Trust score queue Redis",
+        retries: env.redisConnectRetries,
+        delayMs: env.redisConnectDelayMs,
+      }),
+      connectRedisWithRetry(workerConnection, {
+        logger: app.log,
+        label: "Trust score worker Redis",
+        retries: env.redisConnectRetries,
+        delayMs: env.redisConnectDelayMs,
+      }),
+    ]);
+
+    isQueueConnectionReady = true;
+    isWorkerConnectionReady = true;
 
     trustScoreQueue = new Queue<TrustScoreQueueJobData>(TRUST_SCORE_QUEUE_NAME, {
       connection: queueConnection,
@@ -79,9 +108,13 @@ const trustScoreQueuePlugin: FastifyPluginAsync = fp(async (app) => {
 
     await trustScoreWorker.waitUntilReady();
   } catch (error) {
+    if (env.redisRequired) {
+      throw new Error(`Trust queue requires Redis: ${getRedisErrorMessage(error)}`);
+    }
+
     app.log.warn(
       {
-        err: error,
+        reason: getRedisErrorMessage(error),
       },
       "Trust queue is disabled because Redis is unavailable.",
     );
