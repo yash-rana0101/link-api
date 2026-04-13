@@ -1,4 +1,4 @@
-import { Queue, Worker } from "bullmq";
+import { Job, Queue, Worker } from "bullmq";
 import { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
 import Redis from "ioredis";
@@ -101,6 +101,18 @@ const feedQueuePlugin: FastifyPluginAsync = fp(async (app) => {
       );
     });
 
+    feedWorker.on("completed", (job) => {
+      app.log.info(
+        {
+          jobId: job.id,
+          action: job.data.action,
+          userId: job.data.userId,
+          durationMs: getJobDurationMs(job),
+        },
+        "Feed queue job completed.",
+      );
+    });
+
     await feedWorker.waitUntilReady();
   } catch (error) {
     if (env.redisRequired) {
@@ -135,3 +147,11 @@ const feedQueuePlugin: FastifyPluginAsync = fp(async (app) => {
 });
 
 export default feedQueuePlugin;
+
+const getJobDurationMs = (job: Job<FeedQueueJobData>): number | null => {
+  if (typeof job.processedOn !== "number" || typeof job.finishedOn !== "number") {
+    return null;
+  }
+
+  return Math.max(0, job.finishedOn - job.processedOn);
+};

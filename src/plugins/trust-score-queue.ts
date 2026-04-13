@@ -1,4 +1,4 @@
-import { Queue, Worker } from "bullmq";
+import { Job, Queue, Worker } from "bullmq";
 import { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
 import Redis from "ioredis";
@@ -106,6 +106,18 @@ const trustScoreQueuePlugin: FastifyPluginAsync = fp(async (app) => {
       );
     });
 
+    trustScoreWorker.on("completed", (job) => {
+      app.log.info(
+        {
+          jobId: job.id,
+          userId: job.data.userId,
+          event: job.data.event,
+          durationMs: getJobDurationMs(job),
+        },
+        "Trust score queue job completed.",
+      );
+    });
+
     await trustScoreWorker.waitUntilReady();
   } catch (error) {
     if (env.redisRequired) {
@@ -140,3 +152,11 @@ const trustScoreQueuePlugin: FastifyPluginAsync = fp(async (app) => {
 });
 
 export default trustScoreQueuePlugin;
+
+const getJobDurationMs = (job: Job<TrustScoreQueueJobData>): number | null => {
+  if (typeof job.processedOn !== "number" || typeof job.finishedOn !== "number") {
+    return null;
+  }
+
+  return Math.max(0, job.finishedOn - job.processedOn);
+};

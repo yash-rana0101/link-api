@@ -15,7 +15,7 @@ export const messagingRoutes: FastifyPluginAsync = async (app) => {
   const messagingController = new MessagingController(messagingService);
   const messageReadRateLimit = createRateLimitPreHandler(app, {
     endpoint: "messages:read",
-    maxRequests: 180,
+    maxRequests: 120,
   });
 
   app.get(

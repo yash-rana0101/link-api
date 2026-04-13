@@ -1,8 +1,10 @@
 import cors from "@fastify/cors";
+import helmet from "@fastify/helmet";
 import jwt from "@fastify/jwt";
 import Fastify from "fastify";
 
 import { env } from "./config/env";
+import { HttpError } from "./utils/http-error";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { connectionRoutes } from "./modules/connections/connections.routes";
 import { experienceRoutes } from "./modules/experience/experience.routes";
@@ -23,17 +25,39 @@ import rustEnginePlugin from "./plugins/rustEngine";
 import socketPlugin from "./plugins/socket";
 import trustScoreQueuePlugin from "./plugins/trust-score-queue";
 import verificationQueuePlugin from "./plugins/verification-queue";
+import errorHandlerPlugin from "./plugins/error-handler";
 
 export const buildApp = () => {
+  const corsOrigin = env.corsOrigins.includes("*") ? true : env.corsOrigins;
+
   const app = Fastify({
     disableRequestLogging: true,
+    trustProxy: env.nodeEnv === "production",
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
+      redact: {
+        paths: [
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "req.body.password",
+          "req.body.refreshToken",
+          "req.body.accessToken",
+          "req.body.token",
+          "req.body.authorization",
+          "headers.authorization",
+          "headers.cookie",
+        ],
+        censor: "[Redacted]",
+      },
     },
   });
 
+  app.register(helmet, {
+    contentSecurityPolicy: false,
+  });
+
   app.register(cors, {
-    origin: true,
+    origin: corsOrigin,
     credentials: true,
   });
 
@@ -46,24 +70,19 @@ export const buildApp = () => {
       await request.jwtVerify();
 
       if (request.user.tokenType !== "access") {
-        reply.status(401).send({
-          success: false,
-          message: "Access token is required.",
-        });
-
-        return;
+        throw new HttpError(401, "Access token is required.");
       }
-    } catch {
-      reply.status(401).send({
-        success: false,
-        message: "Unauthorized.",
-      });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        throw error;
+      }
 
-      return;
+      throw new HttpError(401, "Unauthorized.");
     }
   });
 
   app.register(loggerPlugin);
+  app.register(errorHandlerPlugin);
   app.register(prismaPlugin);
   app.register(redisPlugin);
   app.register(socketPlugin);

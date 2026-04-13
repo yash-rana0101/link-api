@@ -1,4 +1,4 @@
-import { Queue, Worker } from "bullmq";
+import { Job, Queue, Worker } from "bullmq";
 import { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
 import Redis from "ioredis";
@@ -74,6 +74,11 @@ const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
       defaultJobOptions: {
         removeOnComplete: true,
         removeOnFail: false,
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 1000,
+        },
       },
     });
 
@@ -95,6 +100,17 @@ const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
           experienceId: job?.data.experienceId,
         },
         "Verification queue job failed.",
+      );
+    });
+
+    verificationWorker.on("completed", (job) => {
+      app.log.info(
+        {
+          jobId: job.id,
+          experienceId: job.data.experienceId,
+          durationMs: getJobDurationMs(job),
+        },
+        "Verification queue job completed.",
       );
     });
 
@@ -132,3 +148,11 @@ const verificationQueuePlugin: FastifyPluginAsync = fp(async (app) => {
 });
 
 export default verificationQueuePlugin;
+
+const getJobDurationMs = (job: Job<VerificationQueueJobData>): number | null => {
+  if (typeof job.processedOn !== "number" || typeof job.finishedOn !== "number") {
+    return null;
+  }
+
+  return Math.max(0, job.finishedOn - job.processedOn);
+};

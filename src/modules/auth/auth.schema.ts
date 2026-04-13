@@ -19,6 +19,12 @@ export interface LogoutBody {
   refreshToken: string;
 }
 
+export interface OAuthCallbackBody {
+  code: string;
+  redirectUri?: string;
+  codeVerifier?: string;
+}
+
 export const signupSchema: FastifySchema = {
   body: {
     type: "object",
@@ -62,6 +68,19 @@ export const logoutSchema: FastifySchema = {
     additionalProperties: false,
     properties: {
       refreshToken: { type: "string", minLength: 20 },
+    },
+  },
+};
+
+export const oauthCallbackSchema: FastifySchema = {
+  body: {
+    type: "object",
+    required: ["code"],
+    additionalProperties: false,
+    properties: {
+      code: { type: "string", minLength: 10, maxLength: 4096 },
+      redirectUri: { type: "string", format: "uri", maxLength: 2048 },
+      codeVerifier: { type: "string", minLength: 43, maxLength: 128 },
     },
   },
 };

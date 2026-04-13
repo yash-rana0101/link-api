@@ -26,11 +26,11 @@ export const verificationRoutes: FastifyPluginAsync = async (app) => {
   const verificationController = new VerificationController(verificationService);
   const requestRateLimit = createRateLimitPreHandler(app, {
     endpoint: "verification:request",
-    maxRequests: 30,
+    maxRequests: 15,
   });
   const respondRateLimit = createRateLimitPreHandler(app, {
     endpoint: "verification:respond",
-    maxRequests: 40,
+    maxRequests: 20,
   });
 
   app.post<{ Body: RequestVerificationBody }>(

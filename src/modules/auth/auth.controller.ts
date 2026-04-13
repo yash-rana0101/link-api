@@ -1,7 +1,7 @@
 import { FastifyReply, FastifyRequest } from "fastify";
 
 import { getErrorDetails } from "../../utils/http-error";
-import { LoginBody, LogoutBody, RefreshBody, SignupBody } from "./auth.schema";
+import { LoginBody, LogoutBody, OAuthCallbackBody, RefreshBody, SignupBody } from "./auth.schema";
 import { AuthService } from "./auth.service";
 
 export class AuthController {
@@ -59,6 +59,42 @@ export class AuthController {
       reply.status(200).send({
         success: true,
         message: "Logout successful.",
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
+  oauthGoogle = async (
+    request: FastifyRequest<{ Body: OAuthCallbackBody }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    try {
+      const result = await this.authService.oauthGoogle(request.body);
+
+      reply.status(200).send({
+        success: true,
+        message: "Google authentication successful.",
+        data: result,
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
+  oauthMicrosoft = async (
+    request: FastifyRequest<{ Body: OAuthCallbackBody }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    try {
+      const result = await this.authService.oauthMicrosoft(request.body);
+
+      reply.status(200).send({
+        success: true,
+        message: "Microsoft authentication successful.",
+        data: result,
       });
     } catch (error) {
       const { statusCode, message } = getErrorDetails(error);

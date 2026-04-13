@@ -28,7 +28,7 @@ interface AccessJwtPayload {
 }
 
 const USER_ROOM_PREFIX = "user:";
-const SOCKET_MESSAGE_RATE_LIMIT_MAX = 60;
+const SOCKET_MESSAGE_RATE_LIMIT_MAX = 40;
 const SOCKET_MESSAGE_RATE_LIMIT_WINDOW_SECONDS = 60;
 
 export const registerMessagingSocketHandlers = (app: FastifyInstance, io: Server): void => {
