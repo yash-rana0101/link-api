@@ -4,6 +4,7 @@ import Fastify from "fastify";
 
 import { env } from "./config/env";
 import { authRoutes } from "./modules/auth/auth.routes";
+import { connectionRoutes } from "./modules/connections/connections.routes";
 import { experienceRoutes } from "./modules/experience/experience.routes";
 import { healthRoutes } from "./modules/health/health.route";
 import { trustRoutes } from "./modules/trust/trust.routes";
@@ -67,6 +68,7 @@ export const buildApp = () => {
   app.register(userRoutes, { prefix: "/user" });
   app.register(experienceRoutes, { prefix: "/experience" });
   app.register(verificationRoutes, { prefix: "/verification" });
+  app.register(connectionRoutes, { prefix: "/connections" });
 
   return app;
 };

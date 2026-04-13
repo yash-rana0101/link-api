@@ -1,4 +1,4 @@
-import { ExperienceStatus, Prisma, VerificationStatus } from "@prisma/client";
+import { ConnectionStatus, ExperienceStatus, Prisma, VerificationStatus } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
 const userTrustSelect = {
@@ -38,6 +38,22 @@ export class TrustRepository {
         experience: {
           userId,
         },
+      },
+    });
+  }
+
+  countAcceptedConnectionsForUser(userId: string): Promise<number> {
+    return this.app.prisma.connection.count({
+      where: {
+        status: ConnectionStatus.ACCEPTED,
+        OR: [
+          {
+            requesterId: userId,
+          },
+          {
+            receiverId: userId,
+          },
+        ],
       },
     });
   }

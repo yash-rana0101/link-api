@@ -5,7 +5,6 @@ import { RustEngineClient } from "../../utils/rust-engine-client";
 import { TrustScoreEvent } from "./trust.queue";
 import { TrustRepository } from "./trust.repository";
 
-const DEFAULT_CONNECTION_COUNT = 0;
 const DEFAULT_REPORT_COUNT = 0;
 
 export type TrustLevel = "Low" | "Medium" | "High" | "Very High";
@@ -50,12 +49,16 @@ export class TrustService {
       throw new HttpError(404, "User not found.");
     }
 
-    const [verifiedExperiences, peerConfirmations] = await Promise.all([
+    const connectionsPromise = typeof input.connections === "undefined"
+      ? this.repository.countAcceptedConnectionsForUser(userId)
+      : Promise.resolve(this.normalizeNonNegativeInt(input.connections, "connections"));
+
+    const [verifiedExperiences, peerConfirmations, connections] = await Promise.all([
       this.repository.countVerifiedExperiencesForUser(userId),
       this.repository.countPeerConfirmationsForUser(userId),
+      connectionsPromise,
     ]);
 
-    const connections = this.normalizeNonNegativeInt(input.connections ?? DEFAULT_CONNECTION_COUNT, "connections");
     const reports = this.normalizeNonNegativeInt(input.reports ?? DEFAULT_REPORT_COUNT, "reports");
 
     try {
