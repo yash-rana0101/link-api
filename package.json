@@ -8,6 +8,8 @@
     "dev:infra": "npm run infra:up && npm run dev",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
+    "seed:large": "node scripts/seed-large-data.cjs",
+    "seed:large:append": "node scripts/seed-large-data.cjs --append",
     "infra:up": "docker compose up -d postgres redis rust-service",
     "infra:down": "docker compose down",
     "prisma:generate": "prisma generate --config prisma.config.ts",

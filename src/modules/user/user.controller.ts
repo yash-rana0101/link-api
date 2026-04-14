@@ -2,7 +2,9 @@ import { FastifyReply, FastifyRequest } from "fastify";
 
 import { getErrorDetails } from "../../utils/http-error";
 import {
+  GlobalSearchQuerystring,
   GenerateUploadSignatureBody,
+  ProfileViewsQuerystring,
   PublicProfileParams,
   UpdateProfileBody,
 } from "./user.schema";
@@ -61,11 +63,52 @@ export class UserController {
     reply: FastifyReply,
   ): Promise<void> => {
     try {
-      const profile = await this.userService.getPublicProfileByUrl(request.params.publicProfileUrl);
+      const viewerId = await this.resolveOptionalViewerId(request);
+      const profile = await this.userService.getPublicProfileByUrl(
+        request.params.publicProfileUrl,
+        viewerId,
+      );
 
       reply.status(200).send({
         success: true,
         data: profile,
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
+  getProfileViews = async (
+    request: FastifyRequest<{ Querystring: ProfileViewsQuerystring }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    try {
+      const profileViews = await this.userService.getProfileViews(
+        request.user.sub,
+        request.query.limit,
+      );
+
+      reply.status(200).send({
+        success: true,
+        data: profileViews,
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
+  searchGlobal = async (
+    request: FastifyRequest<{ Querystring: GlobalSearchQuerystring }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    try {
+      const searchResult = await this.userService.searchGlobal(request.user.sub, request.query);
+
+      reply.status(200).send({
+        success: true,
+        data: searchResult,
       });
     } catch (error) {
       const { statusCode, message } = getErrorDetails(error);
@@ -110,4 +153,32 @@ export class UserController {
       reply.status(statusCode).send({ success: false, message });
     }
   };
+
+  private async resolveOptionalViewerId(request: FastifyRequest): Promise<string | null> {
+    const authorizationHeader = request.headers.authorization;
+
+    if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) {
+      return null;
+    }
+
+    const token = authorizationHeader.slice("Bearer ".length).trim();
+
+    if (!token) {
+      return null;
+    }
+
+    try {
+      const payload = await request.server.jwt.verify<{ sub?: string; tokenType?: string }>(token);
+
+      if (payload.tokenType !== "access") {
+        return null;
+      }
+
+      const subject = payload.sub?.trim();
+
+      return subject ? subject : null;
+    } catch {
+      return null;
+    }
+  }
 }

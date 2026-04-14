@@ -18,14 +18,14 @@ const redisConnectDelayMs = parsePositiveIntEnv(
 );
 const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
 
-const normalizeUrl = (value: string, envKey: string, stripTrailingSlash = true): string => {
+function normalizeUrl(value: string, envKey: string, stripTrailingSlash = true): string {
   try {
     const normalizedUrl = new URL(value).toString();
     return stripTrailingSlash ? normalizedUrl.replace(/\/$/, "") : normalizedUrl;
   } catch {
     throw new Error(`${envKey} must be a valid URL.`);
   }
-};
+}
 
 if (Number.isNaN(port)) {
   throw new Error("PORT must be a number.");

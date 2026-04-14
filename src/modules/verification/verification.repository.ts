@@ -10,6 +10,8 @@ const experienceSummarySelect = {
 const verifierSummarySelect = {
   id: true,
   name: true,
+  profileImageUrl: true,
+  publicProfileUrl: true,
 } satisfies Prisma.UserSelect;
 
 const verificationSelect = {

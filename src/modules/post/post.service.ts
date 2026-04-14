@@ -15,6 +15,8 @@ const userSummarySelect = {
   id: true,
   name: true,
   email: true,
+  profileImageUrl: true,
+  publicProfileUrl: true,
   trustScore: true,
 } satisfies Prisma.UserSelect;
 
@@ -33,6 +35,7 @@ const postSummarySelect = {
   id: true,
   userId: true,
   content: true,
+  imageUrl: true,
   createdAt: true,
   user: {
     select: userSummarySelect,
@@ -75,6 +78,7 @@ interface PostSummaryRecord {
   id: string;
   userId: string;
   content: string;
+  imageUrl: string | null;
   createdAt: Date;
   user: UserSummary;
   likeCount: number;
@@ -112,11 +116,13 @@ export class PostService {
   async createPost(data: CreatePostBody, userId: string): Promise<PostSummaryRecord> {
     const normalizedUserId = this.normalizeRequiredId(userId, "userId");
     const content = this.requireTrimmedContent(data.content, "Post content");
+    const imageUrl = this.normalizeOptionalImageUrl(data.imageUrl);
 
     const post = await this.app.prisma.post.create({
       data: {
         userId: normalizedUserId,
         content,
+        imageUrl,
       },
       select: postSummarySelect,
     });
@@ -545,6 +551,20 @@ export class PostService {
 
     if (!normalized) {
       throw new HttpError(400, `${fieldName} is required.`);
+    }
+
+    return normalized;
+  }
+
+  private normalizeOptionalImageUrl(value: string | undefined): string | null {
+    if (typeof value === "undefined") {
+      return null;
+    }
+
+    const normalized = value.trim();
+
+    if (!normalized) {
+      return null;
     }
 
     return normalized;

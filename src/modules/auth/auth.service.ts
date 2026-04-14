@@ -18,6 +18,7 @@ const userPublicSelect = {
   email: true,
   name: true,
   currentRole: true,
+  location: true,
   headline: true,
   about: true,
   profileImageUrl: true,
@@ -90,6 +91,7 @@ export class AuthService {
         email,
         passwordHash,
         name: data.name?.trim() || null,
+        publicProfileUrl: this.buildDefaultPublicProfileUrl(),
       },
       select: userPublicSelect,
     });
@@ -360,6 +362,7 @@ export class AuthService {
           email: profile.email,
           name: profile.name,
           passwordHash: await this.createOAuthPlaceholderPasswordHash(),
+          publicProfileUrl: this.buildDefaultPublicProfileUrl(),
         },
         select: userPublicSelect,
       });
@@ -592,6 +595,10 @@ export class AuthService {
   private toPublicUser(user: UserWithPassword): PublicUser {
     const { passwordHash, ...publicUser } = user;
     return publicUser;
+  }
+
+  private buildDefaultPublicProfileUrl(): string {
+    return `member-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
   }
 
   private normalizeEmail(email: string): string {

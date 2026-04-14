@@ -6,6 +6,7 @@ export interface PostIdParams {
 
 export interface CreatePostBody {
   content: string;
+  imageUrl?: string;
 }
 
 export interface AddCommentBody {
@@ -26,17 +27,18 @@ const postIdParamsSchema = {
   },
 };
 
-const contentBodySchema = {
+const postBodySchema = {
   type: "object",
   required: ["content"],
   additionalProperties: false,
   properties: {
     content: { type: "string", minLength: 1, maxLength: 5000 },
+    imageUrl: { type: "string", format: "uri", maxLength: 2000 },
   },
 };
 
 export const createPostSchema: FastifySchema = {
-  body: contentBodySchema,
+  body: postBodySchema,
 };
 
 export const getFeedSchema: FastifySchema = {
@@ -65,7 +67,9 @@ export const likePostSchema: FastifySchema = {
 export const addCommentSchema: FastifySchema = {
   params: postIdParamsSchema,
   body: {
-    ...contentBodySchema,
+    ...postBodySchema,
+    required: ["content"],
+    additionalProperties: false,
     properties: {
       content: { type: "string", minLength: 1, maxLength: 2000 },
     },

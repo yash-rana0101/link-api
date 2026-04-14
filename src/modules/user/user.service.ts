@@ -1,22 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { ArtifactType, ConnectionStatus, ExperienceStatus, Prisma } from "@prisma/client";
+import { ArtifactType, ConnectionStatus, ExperienceStatus, NotificationType, Prisma } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
 import { env } from "../../config/env";
 import { CacheService } from "../../services/cache.service";
+import { QueueService } from "../../services/queue.service";
 import { HttpError } from "../../utils/http-error";
+import { NotificationQueueJobData } from "../notification/notification.queue";
 import {
   CompletionSectionKey,
   ProfileCompletionEvaluation,
   buildProfileCompletionEvaluation,
 } from "./profile-completion";
-import { UpdateProfileBody, UploadAssetKind } from "./user.schema";
+import { GlobalSearchQuerystring, UpdateProfileBody, UploadAssetKind } from "./user.schema";
 
 const PROFILE_CACHE_TTL_SECONDS = 300;
 const PROFILE_CACHE_PREFIX = "profile";
 const PROFILE_URL_MIN_LENGTH = 3;
 const PROFILE_URL_MAX_LENGTH = 60;
+const PROFILE_VIEW_NOTIFICATION_COOLDOWN_HOURS = 12;
 
 const RESERVED_PUBLIC_PROFILE_URLS = new Set([
   "me",
@@ -51,6 +54,7 @@ const userProfileSelect = {
   email: true,
   name: true,
   currentRole: true,
+  location: true,
   headline: true,
   about: true,
   profileImageUrl: true,
@@ -70,6 +74,7 @@ const publicUserProfileSelect = {
   id: true,
   name: true,
   currentRole: true,
+  location: true,
   headline: true,
   about: true,
   profileImageUrl: true,
@@ -89,6 +94,8 @@ const connectionUserSelect = {
   id: true,
   email: true,
   name: true,
+  profileImageUrl: true,
+  publicProfileUrl: true,
   trustScore: true,
 } satisfies Prisma.UserSelect;
 
@@ -142,12 +149,61 @@ const completePostSelect = {
   },
 } satisfies Prisma.PostSelect;
 
+const profileViewSelect = {
+  id: true,
+  viewerId: true,
+  viewedUserId: true,
+  createdAt: true,
+  viewer: {
+    select: {
+      id: true,
+      name: true,
+      currentRole: true,
+      location: true,
+      headline: true,
+      profileImageUrl: true,
+      publicProfileUrl: true,
+      trustScore: true,
+    },
+  },
+} satisfies Prisma.ProfileViewSelect;
+
+const globalSearchUserSelect = {
+  id: true,
+  name: true,
+  currentRole: true,
+  location: true,
+  headline: true,
+  profileImageUrl: true,
+  publicProfileUrl: true,
+  trustScore: true,
+} satisfies Prisma.UserSelect;
+
+const globalSearchJobSelect = {
+  id: true,
+  title: true,
+  description: true,
+  location: true,
+  createdAt: true,
+  postedById: true,
+  postedBy: {
+    select: {
+      id: true,
+      name: true,
+      publicProfileUrl: true,
+    },
+  },
+} satisfies Prisma.JobSelect;
+
 type UserProfile = Prisma.UserGetPayload<{ select: typeof userProfileSelect }>;
 type PublicProfile = Prisma.UserGetPayload<{ select: typeof publicUserProfileSelect }>;
 type ProfileSkillRecord = Prisma.SkillGetPayload<{ select: typeof profileSkillSelect }>;
 type CompleteExperienceRecord = Prisma.ExperienceGetPayload<{ select: typeof completeExperienceSelect }>;
 type CompleteConnectionRow = Prisma.ConnectionGetPayload<{ select: typeof completeConnectionSelect }>;
 type CompletePostRow = Prisma.PostGetPayload<{ select: typeof completePostSelect }>;
+type ProfileViewRow = Prisma.ProfileViewGetPayload<{ select: typeof profileViewSelect }>;
+type GlobalSearchUserRow = Prisma.UserGetPayload<{ select: typeof globalSearchUserSelect }>;
+type GlobalSearchJobRow = Prisma.JobGetPayload<{ select: typeof globalSearchJobSelect }>;
 
 interface ProfileCertificateRecord {
   id: string;
@@ -210,6 +266,50 @@ export interface PublicProfileResult {
   certificates: ProfileCertificateRecord[];
 }
 
+export interface ProfileViewerRecord {
+  viewer: ProfileViewRow["viewer"];
+  firstViewedAt: Date;
+  lastViewedAt: Date;
+  viewCount: number;
+}
+
+export interface GlobalSearchUserRecord {
+  id: string;
+  name: string | null;
+  currentRole: string | null;
+  location: string | null;
+  headline: string | null;
+  profileImageUrl: string | null;
+  publicProfileUrl: string | null;
+  trustScore: number;
+}
+
+export interface GlobalSearchJobRecord {
+  id: string;
+  title: string;
+  description: string;
+  location: string | null;
+  createdAt: Date;
+  postedById: string;
+  postedBy: {
+    id: string;
+    name: string | null;
+    publicProfileUrl: string | null;
+  };
+}
+
+export interface GlobalSearchCompanyRecord {
+  companyName: string;
+  memberCount: number;
+}
+
+export interface GlobalSearchResult {
+  query: string;
+  users: GlobalSearchUserRecord[];
+  jobs: GlobalSearchJobRecord[];
+  companies: GlobalSearchCompanyRecord[];
+}
+
 export interface ProfileCompletionGuideResult extends ProfileCompletionEvaluation {
   profileCompleteness: Record<CompletionSectionKey, boolean>;
   structuredOutput: {
@@ -233,9 +333,11 @@ export interface UploadSignatureResult {
 
 export class UserService {
   private readonly cacheService: CacheService;
+  private readonly queueService: QueueService;
 
   constructor(private readonly app: FastifyInstance) {
     this.cacheService = new CacheService(app.redis, app.log);
+    this.queueService = new QueueService(app.log);
   }
 
   async getProfile(userId: string): Promise<UserProfile> {
@@ -244,7 +346,16 @@ export class UserService {
     const cachedProfile = await this.cacheService.get<UserProfile>(cacheKey);
 
     if (cachedProfile) {
-      return this.hydrateCachedProfile(cachedProfile);
+      const hydratedCachedProfile = this.hydrateCachedProfile(cachedProfile);
+
+      if (hydratedCachedProfile.publicProfileUrl) {
+        return hydratedCachedProfile;
+      }
+
+      const repairedProfile = await this.ensureUserHasPublicProfileUrl(hydratedCachedProfile);
+      await this.cacheService.set(cacheKey, repairedProfile, PROFILE_CACHE_TTL_SECONDS);
+
+      return repairedProfile;
     }
 
     const user = await this.app.prisma.user.findUnique({
@@ -256,9 +367,11 @@ export class UserService {
       throw new HttpError(404, "User not found.");
     }
 
-    await this.cacheService.set(cacheKey, user, PROFILE_CACHE_TTL_SECONDS);
+    const profile = await this.ensureUserHasPublicProfileUrl(user);
 
-    return user;
+    await this.cacheService.set(cacheKey, profile, PROFILE_CACHE_TTL_SECONDS);
+
+    return profile;
   }
 
   async updateProfile(userId: string, data: UpdateProfileBody): Promise<UserProfile> {
@@ -267,6 +380,7 @@ export class UserService {
     if (
       typeof data.name === "undefined"
       && typeof data.currentRole === "undefined"
+      && typeof data.location === "undefined"
       && typeof data.profileImageUrl === "undefined"
       && typeof data.profileBannerUrl === "undefined"
       && typeof data.publicProfileUrl === "undefined"
@@ -293,6 +407,10 @@ export class UserService {
       updateData.currentRole = this.normalizeNullableText(data.currentRole, "currentRole");
     }
 
+    if (typeof data.location !== "undefined") {
+      updateData.location = this.normalizeNullableText(data.location, "location");
+    }
+
     if (typeof data.headline !== "undefined") {
       updateData.headline = this.normalizeNullableText(data.headline, "headline");
     }
@@ -310,7 +428,9 @@ export class UserService {
     }
 
     if (typeof data.publicProfileUrl !== "undefined") {
-      updateData.publicProfileUrl = this.normalizePublicProfileUrl(data.publicProfileUrl);
+      updateData.publicProfileUrl = data.publicProfileUrl === null
+        ? this.buildDefaultPublicProfileUrl(normalizedUserId)
+        : this.normalizePublicProfileUrl(data.publicProfileUrl);
     }
 
     if (typeof data.skills !== "undefined") {
@@ -402,7 +522,7 @@ export class UserService {
     };
   }
 
-  async getPublicProfileByUrl(publicProfileUrl: string): Promise<PublicProfileResult> {
+  async getPublicProfileByUrl(publicProfileUrl: string, viewerId?: string | null): Promise<PublicProfileResult> {
     const normalizedPublicProfileUrl = this.normalizePublicProfileUrl(publicProfileUrl);
 
     if (!normalizedPublicProfileUrl) {
@@ -444,11 +564,236 @@ export class UserService {
     const certificates = this.buildCertificates(experiences);
     const stats = this.buildProfileStats(experiences, certificates.length, totalConnections, totalPosts);
 
+    if (viewerId) {
+      try {
+        await this.trackProfileView(profile.id, viewerId);
+      } catch (error) {
+        this.app.log.warn(
+          {
+            err: error,
+            viewedUserId: profile.id,
+            viewerId,
+          },
+          "Failed to record profile view.",
+        );
+      }
+    }
+
     return {
       profile,
       stats,
       experiences,
       certificates,
+    };
+  }
+
+  async getProfileViews(userId: string, limitRaw?: string): Promise<ProfileViewerRecord[]> {
+    const normalizedUserId = this.normalizeRequiredId(userId, "userId");
+    const limit = this.parseListLimit(limitRaw, 20, 100);
+
+    const rows = await this.app.prisma.profileView.findMany({
+      where: {
+        viewedUserId: normalizedUserId,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      take: Math.min(limit * 6, 500),
+      select: profileViewSelect,
+    });
+
+    const groupedByViewer = new Map<string, ProfileViewerRecord>();
+
+    for (const row of rows) {
+      if (row.viewerId === normalizedUserId) {
+        continue;
+      }
+
+      const existing = groupedByViewer.get(row.viewerId);
+
+      if (!existing) {
+        groupedByViewer.set(row.viewerId, {
+          viewer: row.viewer,
+          firstViewedAt: row.createdAt,
+          lastViewedAt: row.createdAt,
+          viewCount: 1,
+        });
+        continue;
+      }
+
+      existing.viewCount += 1;
+
+      if (row.createdAt < existing.firstViewedAt) {
+        existing.firstViewedAt = row.createdAt;
+      }
+
+      if (row.createdAt > existing.lastViewedAt) {
+        existing.lastViewedAt = row.createdAt;
+      }
+    }
+
+    return Array.from(groupedByViewer.values())
+      .sort((left, right) => right.lastViewedAt.getTime() - left.lastViewedAt.getTime())
+      .slice(0, limit);
+  }
+
+  async searchGlobal(userId: string, query: GlobalSearchQuerystring): Promise<GlobalSearchResult> {
+    const normalizedUserId = this.normalizeRequiredId(userId, "userId");
+    const normalizedQuery = query.q?.trim() ?? "";
+    const limit = this.parseListLimit(query.limit, 8, 25);
+
+    const userWhere: Prisma.UserWhereInput = {
+      id: {
+        not: normalizedUserId,
+      },
+      publicProfileUrl: {
+        not: null,
+      },
+      ...(normalizedQuery
+        ? {
+          OR: [
+            {
+              name: {
+                contains: normalizedQuery,
+                mode: "insensitive",
+              },
+            },
+            {
+              currentRole: {
+                contains: normalizedQuery,
+                mode: "insensitive",
+              },
+            },
+            {
+              location: {
+                contains: normalizedQuery,
+                mode: "insensitive",
+              },
+            },
+            {
+              headline: {
+                contains: normalizedQuery,
+                mode: "insensitive",
+              },
+            },
+            {
+              about: {
+                contains: normalizedQuery,
+                mode: "insensitive",
+              },
+            },
+            {
+              publicProfileUrl: {
+                contains: normalizedQuery,
+                mode: "insensitive",
+              },
+            },
+            {
+              experiences: {
+                some: {
+                  companyName: {
+                    contains: normalizedQuery,
+                    mode: "insensitive",
+                  },
+                },
+              },
+            },
+          ],
+        }
+        : {}),
+    };
+
+    const jobsWhere: Prisma.JobWhereInput = normalizedQuery
+      ? {
+        OR: [
+          {
+            title: {
+              contains: normalizedQuery,
+              mode: "insensitive",
+            },
+          },
+          {
+            description: {
+              contains: normalizedQuery,
+              mode: "insensitive",
+            },
+          },
+          {
+            location: {
+              contains: normalizedQuery,
+              mode: "insensitive",
+            },
+          },
+        ],
+      }
+      : {};
+
+    const companiesWhere: Prisma.ExperienceWhereInput = normalizedQuery
+      ? {
+        companyName: {
+          contains: normalizedQuery,
+          mode: "insensitive",
+        },
+      }
+      : {};
+
+    const [users, jobs, companies] = await Promise.all([
+      this.app.prisma.user.findMany({
+        where: userWhere,
+        orderBy: [{ trustScore: "desc" }, { createdAt: "desc" }],
+        take: limit,
+        select: globalSearchUserSelect,
+      }),
+      this.app.prisma.job.findMany({
+        where: jobsWhere,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit,
+        select: globalSearchJobSelect,
+      }),
+      this.app.prisma.experience.groupBy({
+        by: ["companyName"],
+        where: companiesWhere,
+        _count: {
+          companyName: true,
+        },
+        orderBy: {
+          _count: {
+            companyName: "desc",
+          },
+        },
+        take: limit,
+      }),
+    ]);
+
+    return {
+      query: normalizedQuery,
+      users: users.map((user): GlobalSearchUserRecord => ({
+        id: user.id,
+        name: user.name,
+        currentRole: user.currentRole,
+        location: user.location,
+        headline: user.headline,
+        profileImageUrl: user.profileImageUrl,
+        publicProfileUrl: user.publicProfileUrl,
+        trustScore: user.trustScore,
+      })),
+      jobs: jobs.map((job): GlobalSearchJobRecord => ({
+        id: job.id,
+        title: job.title,
+        description: job.description,
+        location: job.location,
+        createdAt: job.createdAt,
+        postedById: job.postedById,
+        postedBy: {
+          id: job.postedBy.id,
+          name: job.postedBy.name,
+          publicProfileUrl: job.postedBy.publicProfileUrl,
+        },
+      })),
+      companies: companies.map((company): GlobalSearchCompanyRecord => ({
+        companyName: company.companyName,
+        memberCount: company._count.companyName,
+      })),
     };
   }
 
@@ -471,7 +816,13 @@ export class UserService {
       throw new HttpError(404, "User not found.");
     }
 
-    const kindFolder = kind === "PROFILE_IMAGE" ? "profile-images" : "profile-banners";
+    let kindFolder = "profile-banners";
+
+    if (kind === "PROFILE_IMAGE") {
+      kindFolder = "profile-images";
+    } else if (kind === "POST_IMAGE") {
+      kindFolder = "post-images";
+    }
     const folder = `${env.cloudinaryUploadFolder}/${kindFolder}`;
     const timestamp = Math.floor(Date.now() / 1000);
     const publicId = `${kindFolder}/${normalizedUserId}-${randomUUID()}`;
@@ -570,6 +921,138 @@ export class UserService {
       ...profile,
       createdAt: new Date(profile.createdAt),
     };
+  }
+
+  private async ensureUserHasPublicProfileUrl(profile: UserProfile): Promise<UserProfile> {
+    if (profile.publicProfileUrl) {
+      return profile;
+    }
+
+    const primarySlug = this.buildDefaultPublicProfileUrl(profile.id);
+    const fallbackSlug = `member-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const candidateSlugs = [primarySlug, fallbackSlug];
+
+    for (const slug of candidateSlugs) {
+      try {
+        return await this.app.prisma.user.update({
+          where: {
+            id: profile.id,
+          },
+          data: {
+            publicProfileUrl: slug,
+          },
+          select: userProfileSelect,
+        });
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+          throw error;
+        }
+      }
+    }
+
+    throw new HttpError(409, "Unable to generate a unique public profile URL.");
+  }
+
+  private buildDefaultPublicProfileUrl(userId: string): string {
+    const normalizedId = userId.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 12);
+    const slugSuffix = normalizedId || randomUUID().replace(/-/g, "").slice(0, 12);
+
+    return `member-${slugSuffix}`;
+  }
+
+  private parseListLimit(limitRaw: string | undefined, defaultLimit: number, maxLimit: number): number {
+    if (typeof limitRaw === "undefined") {
+      return defaultLimit;
+    }
+
+    const normalized = limitRaw.trim();
+
+    if (!normalized) {
+      throw new HttpError(400, `limit must be between 1 and ${maxLimit}.`);
+    }
+
+    const parsed = Number.parseInt(normalized, 10);
+
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > maxLimit) {
+      throw new HttpError(400, `limit must be between 1 and ${maxLimit}.`);
+    }
+
+    return parsed;
+  }
+
+  private async trackProfileView(viewedUserId: string, viewerId: string): Promise<void> {
+    const normalizedViewedUserId = this.normalizeRequiredId(viewedUserId, "viewedUserId");
+    const normalizedViewerId = this.normalizeRequiredId(viewerId, "viewerId");
+
+    if (normalizedViewedUserId === normalizedViewerId) {
+      return;
+    }
+
+    const notificationCooldownStart = new Date(
+      Date.now() - PROFILE_VIEW_NOTIFICATION_COOLDOWN_HOURS * 60 * 60 * 1000,
+    );
+
+    const [viewer, recentViewForNotification] = await Promise.all([
+      this.app.prisma.user.findUnique({
+        where: {
+          id: normalizedViewerId,
+        },
+        select: {
+          id: true,
+          name: true,
+        },
+      }),
+      this.app.prisma.profileView.findFirst({
+        where: {
+          viewerId: normalizedViewerId,
+          viewedUserId: normalizedViewedUserId,
+          createdAt: {
+            gte: notificationCooldownStart,
+          },
+        },
+        select: {
+          id: true,
+        },
+      }),
+    ]);
+
+    if (!viewer) {
+      return;
+    }
+
+    await this.app.prisma.profileView.create({
+      data: {
+        viewerId: normalizedViewerId,
+        viewedUserId: normalizedViewedUserId,
+      },
+    });
+
+    if (recentViewForNotification) {
+      return;
+    }
+
+    const viewerLabel = viewer.name?.trim() || "Someone";
+
+    await this.enqueueNotification({
+      userId: normalizedViewedUserId,
+      type: NotificationType.PROFILE_VIEWED,
+      message: `${viewerLabel} viewed your profile.`,
+    });
+  }
+
+  private async enqueueNotification(data: NotificationQueueJobData): Promise<void> {
+    try {
+      await this.queueService.addJob(this.app.notificationQueue, "send-notification", data);
+    } catch (error) {
+      this.app.log.error(
+        {
+          err: error,
+          userId: data.userId,
+          type: data.type,
+        },
+        "Failed to enqueue profile notification.",
+      );
+    }
   }
 
   private normalizeNullableText(value: string | null, fieldName: string): string | null {

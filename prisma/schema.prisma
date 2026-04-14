@@ -12,6 +12,7 @@ model User {
   passwordHash String
   name         String?
   currentRole  String?
+  location     String?
   headline     String?
   about        String?
   profileImageUrl String?
@@ -34,6 +35,8 @@ model User {
   sentMessages  Message[]      @relation("SentMessages")
   postedJobs    Job[]
   applications  Application[]
+  profileViewsGiven    ProfileView[] @relation("ProfileViewer")
+  profileViewsReceived ProfileView[] @relation("ProfileViewed")
 }
 
 model Session {
@@ -101,6 +104,7 @@ model Post {
   id        String   @id @default(uuid())
   userId    String
   content   String
+  imageUrl  String?
   createdAt DateTime @default(now())
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -213,6 +217,20 @@ model Notification {
   @@index([userId, isRead, createdAt])
 }
 
+model ProfileView {
+  id           String   @id @default(uuid())
+  viewerId     String
+  viewedUserId String
+  createdAt    DateTime @default(now())
+
+  viewer     User @relation("ProfileViewer", fields: [viewerId], references: [id], onDelete: Cascade)
+  viewedUser User @relation("ProfileViewed", fields: [viewedUserId], references: [id], onDelete: Cascade)
+
+  @@index([viewerId, createdAt])
+  @@index([viewedUserId, createdAt])
+  @@index([viewerId, viewedUserId, createdAt])
+}
+
 model Job {
   id          String   @id @default(uuid())
   title       String
@@ -296,4 +314,5 @@ enum NotificationType {
   POST_COMMENTED
   JOB_APPLIED
   APPLICATION_STATUS_UPDATED
+  PROFILE_VIEWED
 }

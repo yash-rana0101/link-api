@@ -14,6 +14,8 @@ const userSummarySelect = {
   id: true,
   name: true,
   email: true,
+  profileImageUrl: true,
+  publicProfileUrl: true,
   trustScore: true,
 } satisfies Prisma.UserSelect;
 
