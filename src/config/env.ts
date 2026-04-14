@@ -47,6 +47,10 @@ const microsoftOAuthRedirectUri = parseOptionalUrlEnv(
   "MICROSOFT_OAUTH_REDIRECT_URI",
 );
 const microsoftOAuthTenantId = parseMicrosoftTenantId(process.env.MICROSOFT_OAUTH_TENANT_ID);
+const cloudinaryCloudName = parseOptionalStringEnv(process.env.CLOUDINARY_CLOUD_NAME);
+const cloudinaryApiKey = parseOptionalStringEnv(process.env.CLOUDINARY_API_KEY);
+const cloudinaryApiSecret = parseOptionalStringEnv(process.env.CLOUDINARY_API_SECRET);
+const cloudinaryUploadFolder = parseOptionalStringEnv(process.env.CLOUDINARY_UPLOAD_FOLDER) ?? "zerotrust-network";
 
 assertPairedOptionalEnv(
   "GOOGLE_OAUTH_CLIENT_ID",
@@ -59,6 +63,18 @@ assertPairedOptionalEnv(
   microsoftOAuthClientId,
   "MICROSOFT_OAUTH_CLIENT_SECRET",
   microsoftOAuthClientSecret,
+);
+assertPairedOptionalEnv(
+  "CLOUDINARY_CLOUD_NAME",
+  cloudinaryCloudName,
+  "CLOUDINARY_API_KEY",
+  cloudinaryApiKey,
+);
+assertPairedOptionalEnv(
+  "CLOUDINARY_CLOUD_NAME",
+  cloudinaryCloudName,
+  "CLOUDINARY_API_SECRET",
+  cloudinaryApiSecret,
 );
 
 if (!databaseUrl) {
@@ -93,6 +109,10 @@ export const env = {
   microsoftOAuthClientSecret,
   microsoftOAuthRedirectUri,
   microsoftOAuthTenantId,
+  cloudinaryCloudName,
+  cloudinaryApiKey,
+  cloudinaryApiSecret,
+  cloudinaryUploadFolder,
 };
 
 function parseNodeEnv(value: string | undefined): "development" | "test" | "production" {

@@ -247,6 +247,8 @@ Status values accepted by `PATCH /applications/:id/status`:
   "headline": "string|null",
   "about": "string|null",
   "profileImageUrl": "https://...|null",
+  "profileBannerUrl": "https://...|null",
+  "publicProfileUrl": "ranayash|null",
   "skills": [
     {
       "id": "uuid",
@@ -273,6 +275,8 @@ Status values accepted by `PATCH /applications/:id/status`:
     "headline": "string|null",
     "about": "string|null",
     "profileImageUrl": "https://...|null",
+    "profileBannerUrl": "https://...|null",
+    "publicProfileUrl": "ranayash|null",
     "skills": [
       {
         "id": "uuid",
@@ -427,6 +431,68 @@ This is the recommended endpoint for rendering a full profile screen in one call
 }
 ```
 
+### GET /user/public/:publicProfileUrl
+
+- Auth: No
+- Params: `publicProfileUrl`
+- Purpose: Resolve a public profile by custom URL slug for routes like `/in/ranayash`.
+- Response `200` data shape:
+
+```json
+{
+  "profile": {
+    "id": "uuid",
+    "name": "string|null",
+    "currentRole": "string|null",
+    "headline": "string|null",
+    "about": "string|null",
+    "profileImageUrl": "https://...|null",
+    "profileBannerUrl": "https://...|null",
+    "publicProfileUrl": "ranayash",
+    "skills": [{ "id": "uuid", "name": "Node.js" }],
+    "trustScore": 0,
+    "createdAt": "ISO datetime"
+  },
+  "stats": {
+    "totalExperiences": 3,
+    "verifiedExperiences": 1,
+    "totalArtifacts": 5,
+    "certificateCount": 2,
+    "totalConnections": 12,
+    "totalPosts": 8
+  },
+  "experiences": [],
+  "certificates": []
+}
+```
+
+### POST /user/upload/signature
+
+- Auth: Yes
+- Purpose: Generate signed Cloudinary upload parameters for secure direct upload from client.
+- Body:
+
+```json
+{
+  "kind": "PROFILE_IMAGE|PROFILE_BANNER"
+}
+```
+
+- Response `200` data:
+
+```json
+{
+  "kind": "PROFILE_IMAGE",
+  "cloudName": "your-cloud",
+  "apiKey": "1234567890",
+  "folder": "zerotrust-network/profile-images",
+  "timestamp": 1713100000,
+  "publicId": "profile-images/user-id-uuid",
+  "signature": "sha1-signature",
+  "uploadUrl": "https://api.cloudinary.com/v1_1/your-cloud/image/upload"
+}
+```
+
 ### PATCH /user/update
 
 - Auth: Yes
@@ -439,6 +505,8 @@ This is the recommended endpoint for rendering a full profile screen in one call
   "headline": "optional string|null",
   "about": "optional string|null",
   "profileImageUrl": "optional uri|null",
+  "profileBannerUrl": "optional uri|null",
+  "publicProfileUrl": "optional slug or linkedin-style url|null",
   "skills": ["optional", "0-10 skills"]
 }
 ```
@@ -1141,6 +1209,8 @@ General socket errors and unauthorized cases.
 - `GET /user/me`
 - `GET /user/me/complete`
 - `GET /user/me/completion-guide`
+- `GET /user/public/:publicProfileUrl`
+- `POST /user/upload/signature`
 - `PATCH /user/update`
 - `POST /experience/`
 - `GET /experience/:id`

@@ -17,6 +17,12 @@ const userPublicSelect = {
   id: true,
   email: true,
   name: true,
+  currentRole: true,
+  headline: true,
+  about: true,
+  profileImageUrl: true,
+  profileBannerUrl: true,
+  publicProfileUrl: true,
   trustScore: true,
   createdAt: true,
 } satisfies Prisma.UserSelect;

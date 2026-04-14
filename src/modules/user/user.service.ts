@@ -1,6 +1,9 @@
+import { createHash, randomUUID } from "node:crypto";
+
 import { ArtifactType, ConnectionStatus, ExperienceStatus, Prisma } from "@prisma/client";
 import { FastifyInstance } from "fastify";
 
+import { env } from "../../config/env";
 import { CacheService } from "../../services/cache.service";
 import { HttpError } from "../../utils/http-error";
 import {
@@ -8,10 +11,35 @@ import {
   ProfileCompletionEvaluation,
   buildProfileCompletionEvaluation,
 } from "./profile-completion";
-import { UpdateProfileBody } from "./user.schema";
+import { UpdateProfileBody, UploadAssetKind } from "./user.schema";
 
 const PROFILE_CACHE_TTL_SECONDS = 300;
 const PROFILE_CACHE_PREFIX = "profile";
+const PROFILE_URL_MIN_LENGTH = 3;
+const PROFILE_URL_MAX_LENGTH = 60;
+
+const RESERVED_PUBLIC_PROFILE_URLS = new Set([
+  "me",
+  "public",
+  "update",
+  "upload",
+  "complete",
+  "completion-guide",
+  "auth",
+  "feed",
+  "jobs",
+  "messages",
+  "notifications",
+  "connections",
+  "verification",
+  "api",
+  "admin",
+  "settings",
+  "support",
+  "help",
+  "privacy",
+  "terms",
+]);
 
 const profileSkillSelect = {
   id: true,
@@ -26,6 +54,27 @@ const userProfileSelect = {
   headline: true,
   about: true,
   profileImageUrl: true,
+  profileBannerUrl: true,
+  publicProfileUrl: true,
+  trustScore: true,
+  createdAt: true,
+  skills: {
+    orderBy: {
+      name: "asc",
+    },
+    select: profileSkillSelect,
+  },
+} satisfies Prisma.UserSelect;
+
+const publicUserProfileSelect = {
+  id: true,
+  name: true,
+  currentRole: true,
+  headline: true,
+  about: true,
+  profileImageUrl: true,
+  profileBannerUrl: true,
+  publicProfileUrl: true,
   trustScore: true,
   createdAt: true,
   skills: {
@@ -94,6 +143,7 @@ const completePostSelect = {
 } satisfies Prisma.PostSelect;
 
 type UserProfile = Prisma.UserGetPayload<{ select: typeof userProfileSelect }>;
+type PublicProfile = Prisma.UserGetPayload<{ select: typeof publicUserProfileSelect }>;
 type ProfileSkillRecord = Prisma.SkillGetPayload<{ select: typeof profileSkillSelect }>;
 type CompleteExperienceRecord = Prisma.ExperienceGetPayload<{ select: typeof completeExperienceSelect }>;
 type CompleteConnectionRow = Prisma.ConnectionGetPayload<{ select: typeof completeConnectionSelect }>;
@@ -135,20 +185,29 @@ interface ProfileProofRecord {
   createdAt: Date;
 }
 
+interface ProfileStatsResult {
+  totalExperiences: number;
+  verifiedExperiences: number;
+  totalArtifacts: number;
+  certificateCount: number;
+  totalConnections: number;
+  totalPosts: number;
+}
+
 export interface CompleteProfileResult {
   profile: UserProfile;
-  stats: {
-    totalExperiences: number;
-    verifiedExperiences: number;
-    totalArtifacts: number;
-    certificateCount: number;
-    totalConnections: number;
-    totalPosts: number;
-  };
+  stats: ProfileStatsResult;
   experiences: CompleteExperienceRecord[];
   certificates: ProfileCertificateRecord[];
   connections: ProfileConnectionRecord[];
   posts: ProfilePostRecord[];
+}
+
+export interface PublicProfileResult {
+  profile: PublicProfile;
+  stats: ProfileStatsResult;
+  experiences: CompleteExperienceRecord[];
+  certificates: ProfileCertificateRecord[];
 }
 
 export interface ProfileCompletionGuideResult extends ProfileCompletionEvaluation {
@@ -159,6 +218,17 @@ export interface ProfileCompletionGuideResult extends ProfileCompletionEvaluatio
     skills: string[];
     artifacts: ProfileProofRecord[];
   };
+}
+
+export interface UploadSignatureResult {
+  kind: UploadAssetKind;
+  cloudName: string;
+  apiKey: string;
+  folder: string;
+  timestamp: number;
+  publicId: string;
+  signature: string;
+  uploadUrl: string;
 }
 
 export class UserService {
@@ -198,6 +268,8 @@ export class UserService {
       typeof data.name === "undefined"
       && typeof data.currentRole === "undefined"
       && typeof data.profileImageUrl === "undefined"
+      && typeof data.profileBannerUrl === "undefined"
+      && typeof data.publicProfileUrl === "undefined"
       && typeof data.headline === "undefined"
       && typeof data.about === "undefined"
       && typeof data.skills === "undefined"
@@ -233,6 +305,14 @@ export class UserService {
       updateData.profileImageUrl = this.normalizeNullableUrl(data.profileImageUrl, "profileImageUrl");
     }
 
+    if (typeof data.profileBannerUrl !== "undefined") {
+      updateData.profileBannerUrl = this.normalizeNullableUrl(data.profileBannerUrl, "profileBannerUrl");
+    }
+
+    if (typeof data.publicProfileUrl !== "undefined") {
+      updateData.publicProfileUrl = this.normalizePublicProfileUrl(data.publicProfileUrl);
+    }
+
     if (typeof data.skills !== "undefined") {
       const normalizedSkills = this.normalizeSkills(data.skills);
 
@@ -255,6 +335,10 @@ export class UserService {
     } catch (error) {
       if (error instanceof HttpError) {
         throw error;
+      }
+
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        throw new HttpError(409, "This public profile URL is already in use.");
       }
 
       throw new HttpError(404, "User not found.");
@@ -318,6 +402,96 @@ export class UserService {
     };
   }
 
+  async getPublicProfileByUrl(publicProfileUrl: string): Promise<PublicProfileResult> {
+    const normalizedPublicProfileUrl = this.normalizePublicProfileUrl(publicProfileUrl);
+
+    if (!normalizedPublicProfileUrl) {
+      throw new HttpError(400, "publicProfileUrl is required.");
+    }
+
+    const profile = await this.app.prisma.user.findUnique({
+      where: {
+        publicProfileUrl: normalizedPublicProfileUrl,
+      },
+      select: publicUserProfileSelect,
+    });
+
+    if (!profile) {
+      throw new HttpError(404, "Public profile not found.");
+    }
+
+    const [experiences, totalConnections, totalPosts] = await Promise.all([
+      this.app.prisma.experience.findMany({
+        where: {
+          userId: profile.id,
+        },
+        orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
+        select: completeExperienceSelect,
+      }),
+      this.app.prisma.connection.count({
+        where: {
+          status: ConnectionStatus.ACCEPTED,
+          OR: [{ requesterId: profile.id }, { receiverId: profile.id }],
+        },
+      }),
+      this.app.prisma.post.count({
+        where: {
+          userId: profile.id,
+        },
+      }),
+    ]);
+
+    const certificates = this.buildCertificates(experiences);
+    const stats = this.buildProfileStats(experiences, certificates.length, totalConnections, totalPosts);
+
+    return {
+      profile,
+      stats,
+      experiences,
+      certificates,
+    };
+  }
+
+  async generateUploadSignature(userId: string, kind: UploadAssetKind): Promise<UploadSignatureResult> {
+    const normalizedUserId = this.normalizeRequiredId(userId, "userId");
+    const cloudName = env.cloudinaryCloudName;
+    const apiKey = env.cloudinaryApiKey;
+    const apiSecret = env.cloudinaryApiSecret;
+
+    if (!cloudName || !apiKey || !apiSecret) {
+      throw new HttpError(503, "Cloudinary upload is not configured.");
+    }
+
+    const userExists = await this.app.prisma.user.findUnique({
+      where: { id: normalizedUserId },
+      select: { id: true },
+    });
+
+    if (!userExists) {
+      throw new HttpError(404, "User not found.");
+    }
+
+    const kindFolder = kind === "PROFILE_IMAGE" ? "profile-images" : "profile-banners";
+    const folder = `${env.cloudinaryUploadFolder}/${kindFolder}`;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const publicId = `${kindFolder}/${normalizedUserId}-${randomUUID()}`;
+    const signatureBase = `folder=${folder}&public_id=${publicId}&timestamp=${timestamp}`;
+    const signature = createHash("sha1")
+      .update(`${signatureBase}${apiSecret}`)
+      .digest("hex");
+
+    return {
+      kind,
+      cloudName,
+      apiKey,
+      folder,
+      timestamp,
+      publicId,
+      signature,
+      uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+    };
+  }
+
   async getCompleteProfile(userId: string): Promise<CompleteProfileResult> {
     const normalizedUserId = this.normalizeRequiredId(userId, "userId");
     const profile = await this.getProfile(normalizedUserId);
@@ -351,18 +525,7 @@ export class UserService {
       }),
     ]);
 
-    const certificates = experiences
-      .flatMap((experience) => experience.artifacts
-        .filter((artifact) => artifact.type === ArtifactType.CERTIFICATE)
-        .map((artifact) => ({
-          id: artifact.id,
-          experienceId: experience.id,
-          companyName: experience.companyName,
-          role: experience.role,
-          url: artifact.url,
-          createdAt: artifact.createdAt,
-        })))
-      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+    const certificates = this.buildCertificates(experiences);
 
     const mappedConnections = connections.map((connection) => ({
       id: connection.id,
@@ -381,22 +544,16 @@ export class UserService {
       commentCount: post._count.comments,
     }));
 
-    const verifiedExperiences = experiences.filter((experience) => (
-      experience.status === ExperienceStatus.PEER_VERIFIED
-      || experience.status === ExperienceStatus.FULLY_VERIFIED
-    )).length;
-    const totalArtifacts = experiences.reduce((total, experience) => total + experience.artifacts.length, 0);
+    const stats = this.buildProfileStats(
+      experiences,
+      certificates.length,
+      mappedConnections.length,
+      mappedPosts.length,
+    );
 
     return {
       profile,
-      stats: {
-        totalExperiences: experiences.length,
-        verifiedExperiences,
-        totalArtifacts,
-        certificateCount: certificates.length,
-        totalConnections: mappedConnections.length,
-        totalPosts: mappedPosts.length,
-      },
+      stats,
       experiences,
       certificates,
       connections: mappedConnections,
@@ -455,6 +612,100 @@ export class UserService {
 
       throw new HttpError(400, `${fieldName} must be a valid URL.`);
     }
+  }
+
+  private normalizePublicProfileUrl(value: string | null): string | null {
+    if (value === null) {
+      return null;
+    }
+
+    const rawValue = value.trim();
+
+    if (!rawValue) {
+      throw new HttpError(400, "publicProfileUrl cannot be empty string. Use null to clear it.");
+    }
+
+    let slug = rawValue;
+
+    if (rawValue.includes("/")) {
+      try {
+        const parsed = new URL(rawValue.startsWith("http") ? rawValue : `https://${rawValue}`);
+        slug = this.extractProfileSlug(parsed.pathname);
+      } catch {
+        slug = this.extractProfileSlug(rawValue);
+      }
+    }
+
+    const normalized = slug
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+
+    if (normalized.length < PROFILE_URL_MIN_LENGTH || normalized.length > PROFILE_URL_MAX_LENGTH) {
+      throw new HttpError(
+        400,
+        `publicProfileUrl must be ${PROFILE_URL_MIN_LENGTH}-${PROFILE_URL_MAX_LENGTH} characters after normalization.`,
+      );
+    }
+
+    if (RESERVED_PUBLIC_PROFILE_URLS.has(normalized)) {
+      throw new HttpError(400, "This public profile URL is reserved.");
+    }
+
+    return normalized;
+  }
+
+  private extractProfileSlug(value: string): string {
+    const cleaned = value.trim().replace(/^\/+|\/+$/g, "");
+    const parts = cleaned.split("/").filter(Boolean);
+
+    if (parts.length === 0) {
+      return cleaned;
+    }
+
+    if (parts[0]?.toLowerCase() === "in" && parts[1]) {
+      return parts[1];
+    }
+
+    return parts[parts.length - 1] ?? cleaned;
+  }
+
+  private buildCertificates(experiences: CompleteExperienceRecord[]): ProfileCertificateRecord[] {
+    return experiences
+      .flatMap((experience) => experience.artifacts
+        .filter((artifact) => artifact.type === ArtifactType.CERTIFICATE)
+        .map((artifact) => ({
+          id: artifact.id,
+          experienceId: experience.id,
+          companyName: experience.companyName,
+          role: experience.role,
+          url: artifact.url,
+          createdAt: artifact.createdAt,
+        })))
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+  }
+
+  private buildProfileStats(
+    experiences: CompleteExperienceRecord[],
+    certificateCount: number,
+    totalConnections: number,
+    totalPosts: number,
+  ): ProfileStatsResult {
+    const verifiedExperiences = experiences.filter((experience) => (
+      experience.status === ExperienceStatus.PEER_VERIFIED
+      || experience.status === ExperienceStatus.FULLY_VERIFIED
+    )).length;
+    const totalArtifacts = experiences.reduce((total, experience) => total + experience.artifacts.length, 0);
+
+    return {
+      totalExperiences: experiences.length,
+      verifiedExperiences,
+      totalArtifacts,
+      certificateCount,
+      totalConnections,
+      totalPosts,
+    };
   }
 
   private normalizeSkills(skills: string[]): string[] {

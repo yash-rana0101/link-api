@@ -1,7 +1,11 @@
 import { FastifyReply, FastifyRequest } from "fastify";
 
 import { getErrorDetails } from "../../utils/http-error";
-import { UpdateProfileBody } from "./user.schema";
+import {
+  GenerateUploadSignatureBody,
+  PublicProfileParams,
+  UpdateProfileBody,
+} from "./user.schema";
 import { UserService } from "./user.service";
 
 export class UserController {
@@ -45,6 +49,43 @@ export class UserController {
       reply.status(200).send({
         success: true,
         data: completionGuide,
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
+  getPublicProfile = async (
+    request: FastifyRequest<{ Params: PublicProfileParams }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    try {
+      const profile = await this.userService.getPublicProfileByUrl(request.params.publicProfileUrl);
+
+      reply.status(200).send({
+        success: true,
+        data: profile,
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
+  generateUploadSignature = async (
+    request: FastifyRequest<{ Body: GenerateUploadSignatureBody }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    try {
+      const uploadSignature = await this.userService.generateUploadSignature(
+        request.user.sub,
+        request.body.kind,
+      );
+
+      reply.status(200).send({
+        success: true,
+        data: uploadSignature,
       });
     } catch (error) {
       const { statusCode, message } = getErrorDetails(error);

@@ -136,6 +136,13 @@ const mapPrismaError = (error: Prisma.PrismaClientKnownRequestError): { statusCo
     };
   }
 
+  if (error.code === "P2021" || error.code === "P2022") {
+    return {
+      statusCode: 503,
+      message: "Database schema is out of date. Run Prisma migrations and restart the API.",
+    };
+  }
+
   return {
     statusCode: 500,
     message: "Database operation failed.",
