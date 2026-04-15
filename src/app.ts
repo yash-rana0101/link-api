@@ -8,11 +8,13 @@ import { HttpError } from "./utils/http-error";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { connectionRoutes } from "./modules/connections/connections.routes";
 import { experienceRoutes } from "./modules/experience/experience.routes";
+import { followRoutes } from "./modules/follows/follows.routes";
 import { healthRoutes } from "./modules/health/health.route";
 import { applicationRoutes, jobRoutes } from "./modules/jobs/jobs.routes";
 import { messagingRoutes } from "./modules/messaging/messaging.routes";
 import { notificationRoutes } from "./modules/notification/notification.routes";
 import { postRoutes } from "./modules/post/post.routes";
+import { reportRoutes } from "./modules/reports/reports.routes";
 import { trustRoutes } from "./modules/trust/trust.routes";
 import { userRoutes } from "./modules/user/user.routes";
 import { verificationRoutes } from "./modules/verification/verification.routes";
@@ -59,6 +61,8 @@ export const buildApp = () => {
   app.register(cors, {
     origin: corsOrigin,
     credentials: true,
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   });
 
   app.register(jwt, {
@@ -98,11 +102,13 @@ export const buildApp = () => {
   app.register(experienceRoutes, { prefix: "/experience" });
   app.register(verificationRoutes, { prefix: "/verification" });
   app.register(connectionRoutes, { prefix: "/connections" });
+  app.register(followRoutes, { prefix: "/follows" });
   app.register(postRoutes, { prefix: "/posts" });
   app.register(messagingRoutes, { prefix: "/messages" });
   app.register(jobRoutes, { prefix: "/jobs" });
   app.register(applicationRoutes, { prefix: "/applications" });
   app.register(notificationRoutes, { prefix: "/notifications" });
+  app.register(reportRoutes, { prefix: "/reports" });
 
   return app;
 };

@@ -409,19 +409,22 @@ export class PostService {
   }
 
   private async getFeedAuthorIds(userId: string): Promise<string[]> {
-    const connections = await this.app.prisma.connection.findMany({
-      where: {
-        status: ConnectionStatus.ACCEPTED,
-        OR: [
-          { requesterId: userId },
-          { receiverId: userId },
-        ],
-      },
-      select: {
-        requesterId: true,
-        receiverId: true,
-      },
-    });
+    const [connections, followingAuthorIds] = await Promise.all([
+      this.app.prisma.connection.findMany({
+        where: {
+          status: ConnectionStatus.ACCEPTED,
+          OR: [
+            { requesterId: userId },
+            { receiverId: userId },
+          ],
+        },
+        select: {
+          requesterId: true,
+          receiverId: true,
+        },
+      }),
+      this.getFollowingAuthorIdsSafe(userId),
+    ]);
 
     const authorIds = new Set<string>([userId]);
 
@@ -430,7 +433,40 @@ export class PostService {
       authorIds.add(connection.receiverId);
     }
 
+    for (const followingAuthorId of followingAuthorIds) {
+      authorIds.add(followingAuthorId);
+    }
+
     return Array.from(authorIds);
+  }
+
+  private async getFollowingAuthorIdsSafe(userId: string): Promise<string[]> {
+    try {
+      const follows = await this.app.prisma.follow.findMany({
+        where: {
+          followerId: userId,
+        },
+        select: {
+          followingId: true,
+        },
+      });
+
+      return follows.map((follow) => follow.followingId);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2021" || error.code === "P2022")) {
+        this.app.log.warn(
+          {
+            err: error,
+            userId,
+          },
+          "Follow table unavailable while resolving feed authors; continuing with connections only.",
+        );
+
+        return [];
+      }
+
+      throw error;
+    }
   }
 
   private async enqueueFeedPostCreated(

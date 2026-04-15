@@ -3,6 +3,7 @@ import { FastifyReply, FastifyRequest } from "fastify";
 import { getErrorDetails } from "../../utils/http-error";
 import {
   ConnectionIdParams,
+  ConnectionStatusParams,
   RespondConnectionRequestBody,
   SendConnectionRequestBody,
 } from "./connections.schema";
@@ -74,6 +75,26 @@ export class ConnectionController {
       reply.status(200).send({
         success: true,
         data: pendingRequests,
+      });
+    } catch (error) {
+      const { statusCode, message } = getErrorDetails(error);
+      reply.status(statusCode).send({ success: false, message });
+    }
+  };
+
+  getConnectionStatus = async (
+    request: FastifyRequest<{ Params: ConnectionStatusParams }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    try {
+      const connectionStatus = await this.connectionService.getConnectionStatus(
+        request.params.userId,
+        request.user.sub,
+      );
+
+      reply.status(200).send({
+        success: true,
+        data: connectionStatus,
       });
     } catch (error) {
       const { statusCode, message } = getErrorDetails(error);

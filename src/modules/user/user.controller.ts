@@ -74,6 +74,14 @@ export class UserController {
         data: profile,
       });
     } catch (error) {
+      request.log.error(
+        {
+          err: error,
+          publicProfileUrl: request.params.publicProfileUrl,
+        },
+        "Failed to fetch public profile.",
+      );
+
       const { statusCode, message } = getErrorDetails(error);
       reply.status(statusCode).send({ success: false, message });
     }

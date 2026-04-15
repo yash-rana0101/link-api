@@ -4,9 +4,11 @@ import { createRateLimitPreHandler } from "../../middlewares/rate-limit";
 import { ConnectionController } from "./connections.controller";
 import {
   ConnectionIdParams,
+  ConnectionStatusParams,
   RespondConnectionRequestBody,
   SendConnectionRequestBody,
   deleteConnectionSchema,
+  getConnectionStatusSchema,
   respondConnectionRequestSchema,
   sendConnectionRequestSchema,
 } from "./connections.schema";
@@ -56,6 +58,15 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
       preHandler: [app.authenticate],
     },
     connectionController.getPendingRequests,
+  );
+
+  app.get<{ Params: ConnectionStatusParams }>(
+    "/status/:userId",
+    {
+      preHandler: [app.authenticate],
+      schema: getConnectionStatusSchema,
+    },
+    connectionController.getConnectionStatus,
   );
 
   app.delete<{ Params: ConnectionIdParams }>(

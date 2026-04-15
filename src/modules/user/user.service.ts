@@ -258,6 +258,8 @@ interface ProfileProjectRecord {
 
 interface ProfileAnalyticsRecord {
   totalConnections: number;
+  totalFollowers: number;
+  totalFollowing: number;
   totalExperiences: number;
   verifiedExperiences: number;
   totalArtifacts: number;
@@ -588,7 +590,15 @@ export class UserService {
       throw new HttpError(404, "Public profile not found.");
     }
 
-    const [experiences, posts, totalConnections, totalPosts, totalProfileViews] = await Promise.all([
+    const [
+      experiences,
+      posts,
+      totalConnections,
+      totalPosts,
+      totalProfileViews,
+      totalFollowers,
+      totalFollowing,
+    ] = await Promise.all([
       this.app.prisma.experience.findMany({
         where: {
           userId: profile.id,
@@ -621,6 +631,8 @@ export class UserService {
           viewedUserId: profile.id,
         },
       }),
+      this.countFollowersSafe(profile.id),
+      this.countFollowingSafe(profile.id),
     ]);
 
     const certificates = this.buildCertificates(experiences);
@@ -643,6 +655,8 @@ export class UserService {
       projects.length,
       mappedPosts,
       totalProfileViews,
+      totalFollowers,
+      totalFollowing,
     );
 
     if (viewerId) {
@@ -933,7 +947,14 @@ export class UserService {
     const normalizedUserId = this.normalizeRequiredId(userId, "userId");
     const profile = await this.getProfile(normalizedUserId);
 
-    const [experiences, connections, posts, totalProfileViews] = await Promise.all([
+    const [
+      experiences,
+      connections,
+      posts,
+      totalProfileViews,
+      totalFollowers,
+      totalFollowing,
+    ] = await Promise.all([
       this.app.prisma.experience.findMany({
         where: {
           userId: normalizedUserId,
@@ -965,6 +986,8 @@ export class UserService {
           viewedUserId: normalizedUserId,
         },
       }),
+      this.countFollowersSafe(normalizedUserId),
+      this.countFollowingSafe(normalizedUserId),
     ]);
 
     const certificates = this.buildCertificates(experiences);
@@ -1004,6 +1027,8 @@ export class UserService {
       projects.length,
       mappedPosts,
       totalProfileViews,
+      totalFollowers,
+      totalFollowing,
     );
 
     return {
@@ -1018,6 +1043,54 @@ export class UserService {
       featuredPost,
       analytics,
     };
+  }
+
+  private async countFollowersSafe(userId: string): Promise<number> {
+    try {
+      return await this.app.prisma.follow.count({
+        where: {
+          followingId: userId,
+        },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2021" || error.code === "P2022")) {
+        this.app.log.warn(
+          {
+            err: error,
+            userId,
+          },
+          "Follow table unavailable while counting followers; defaulting to zero.",
+        );
+
+        return 0;
+      }
+
+      throw error;
+    }
+  }
+
+  private async countFollowingSafe(userId: string): Promise<number> {
+    try {
+      return await this.app.prisma.follow.count({
+        where: {
+          followerId: userId,
+        },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2021" || error.code === "P2022")) {
+        this.app.log.warn(
+          {
+            err: error,
+            userId,
+          },
+          "Follow table unavailable while counting following; defaulting to zero.",
+        );
+
+        return 0;
+      }
+
+      throw error;
+    }
   }
 
   private buildProfileCacheKey(userId: string): string {
@@ -1340,12 +1413,16 @@ export class UserService {
     totalProjects: number,
     posts: ProfilePostRecord[],
     totalProfileViews: number,
+    totalFollowers: number,
+    totalFollowing: number,
   ): ProfileAnalyticsRecord {
     const totalReactions = posts.reduce((sum, post) => sum + post.likeCount, 0);
     const totalComments = posts.reduce((sum, post) => sum + post.commentCount, 0);
 
     return {
       totalConnections: stats.totalConnections,
+      totalFollowers,
+      totalFollowing,
       totalExperiences: stats.totalExperiences,
       verifiedExperiences: stats.verifiedExperiences,
       totalArtifacts: stats.totalArtifacts,

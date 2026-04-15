@@ -8,6 +8,10 @@ export interface ConnectionIdParams {
   id: string;
 }
 
+export interface ConnectionStatusParams {
+  userId: string;
+}
+
 export interface SendConnectionRequestBody {
   receiverId: string;
   relationship: RelationshipType;
@@ -26,6 +30,15 @@ const connectionIdParamsSchema = {
   additionalProperties: false,
   properties: {
     id: { type: "string", minLength: 1 },
+  },
+};
+
+const connectionStatusParamsSchema = {
+  type: "object",
+  required: ["userId"],
+  additionalProperties: false,
+  properties: {
+    userId: { type: "string", minLength: 1 },
   },
 };
 
@@ -55,4 +68,8 @@ export const respondConnectionRequestSchema: FastifySchema = {
 
 export const deleteConnectionSchema: FastifySchema = {
   params: connectionIdParamsSchema,
+};
+
+export const getConnectionStatusSchema: FastifySchema = {
+  params: connectionStatusParamsSchema,
 };

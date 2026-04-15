@@ -1,4 +1,4 @@
-import { ConnectionStatus } from "@prisma/client";
+import { ConnectionStatus, Prisma } from "@prisma/client";
 import { Job } from "bullmq";
 import { FastifyInstance } from "fastify";
 
@@ -27,19 +27,22 @@ const chunkArray = <T>(items: T[], chunkSize: number): T[][] => {
 };
 
 const getFeedRecipients = async (app: FastifyInstance, authorId: string): Promise<string[]> => {
-  const connections = await app.prisma.connection.findMany({
-    where: {
-      status: ConnectionStatus.ACCEPTED,
-      OR: [
-        { requesterId: authorId },
-        { receiverId: authorId },
-      ],
-    },
-    select: {
-      requesterId: true,
-      receiverId: true,
-    },
-  });
+  const [connections, followerIds] = await Promise.all([
+    app.prisma.connection.findMany({
+      where: {
+        status: ConnectionStatus.ACCEPTED,
+        OR: [
+          { requesterId: authorId },
+          { receiverId: authorId },
+        ],
+      },
+      select: {
+        requesterId: true,
+        receiverId: true,
+      },
+    }),
+    getFollowerIdsSafe(app, authorId),
+  ]);
 
   const recipientIds = new Set<string>([authorId]);
 
@@ -48,7 +51,40 @@ const getFeedRecipients = async (app: FastifyInstance, authorId: string): Promis
     recipientIds.add(connection.receiverId);
   }
 
+  for (const followerId of followerIds) {
+    recipientIds.add(followerId);
+  }
+
   return Array.from(recipientIds);
+};
+
+const getFollowerIdsSafe = async (app: FastifyInstance, authorId: string): Promise<string[]> => {
+  try {
+    const follows = await app.prisma.follow.findMany({
+      where: {
+        followingId: authorId,
+      },
+      select: {
+        followerId: true,
+      },
+    });
+
+    return follows.map((follow) => follow.followerId);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2021" || error.code === "P2022")) {
+      app.log.warn(
+        {
+          err: error,
+          authorId,
+        },
+        "Follow table unavailable during feed fanout; continuing with connections only.",
+      );
+
+      return [];
+    }
+
+    throw error;
+  }
 };
 
 const fanoutPostToRecipients = async (

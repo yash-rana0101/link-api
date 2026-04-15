@@ -34,6 +34,15 @@ type ConnectionRecord = Prisma.ConnectionGetPayload<{
   select: typeof connectionSelect;
 }>;
 
+export interface ConnectionStatusRecord {
+  targetUserId: string;
+  isConnected: boolean;
+  canMessage: boolean;
+  hasPendingRequestFromCurrentUser: boolean;
+  hasPendingRequestToCurrentUser: boolean;
+  connectionId: string | null;
+}
+
 export class ConnectionService {
   private readonly queueService: QueueService;
 
@@ -201,6 +210,82 @@ export class ConnectionService {
       },
       select: connectionSelect,
     });
+  }
+
+  async getConnectionStatus(targetUserId: string, userId: string): Promise<ConnectionStatusRecord> {
+    const normalizedTargetUserId = this.normalizeRequiredId(targetUserId, "userId");
+    const normalizedUserId = this.normalizeRequiredId(userId, "userId");
+
+    if (normalizedTargetUserId === normalizedUserId) {
+      return {
+        targetUserId: normalizedTargetUserId,
+        isConnected: false,
+        canMessage: false,
+        hasPendingRequestFromCurrentUser: false,
+        hasPendingRequestToCurrentUser: false,
+        connectionId: null,
+      };
+    }
+
+    const targetUser = await this.app.prisma.user.findUnique({
+      where: { id: normalizedTargetUserId },
+      select: { id: true },
+    });
+
+    if (!targetUser) {
+      throw new HttpError(404, "Target user not found.");
+    }
+
+    const connection = await this.app.prisma.connection.findFirst({
+      where: {
+        OR: [
+          {
+            requesterId: normalizedUserId,
+            receiverId: normalizedTargetUserId,
+          },
+          {
+            requesterId: normalizedTargetUserId,
+            receiverId: normalizedUserId,
+          },
+        ],
+      },
+      select: {
+        id: true,
+        requesterId: true,
+        receiverId: true,
+        status: true,
+      },
+    });
+
+    if (!connection) {
+      return {
+        targetUserId: normalizedTargetUserId,
+        isConnected: false,
+        canMessage: false,
+        hasPendingRequestFromCurrentUser: false,
+        hasPendingRequestToCurrentUser: false,
+        connectionId: null,
+      };
+    }
+
+    const hasPendingRequestFromCurrentUser = (
+      connection.status === ConnectionStatus.PENDING
+      && connection.requesterId === normalizedUserId
+    );
+    const hasPendingRequestToCurrentUser = (
+      connection.status === ConnectionStatus.PENDING
+      && connection.receiverId === normalizedUserId
+    );
+    const isConnected = connection.status === ConnectionStatus.ACCEPTED;
+
+    return {
+      targetUserId: normalizedTargetUserId,
+      isConnected,
+      canMessage: isConnected,
+      hasPendingRequestFromCurrentUser,
+      hasPendingRequestToCurrentUser,
+      connectionId: connection.id,
+    };
   }
 
   async deleteConnection(connectionId: string, userId: string): Promise<void> {

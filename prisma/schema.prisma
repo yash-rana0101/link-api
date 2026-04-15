@@ -27,16 +27,34 @@ model User {
   verifications Verification[]
   sentConnections Connection[] @relation("Requester")
   receivedConnections Connection[] @relation("Receiver")
+  following     Follow[]  @relation("FollowerUser")
+  followers     Follow[]  @relation("FollowingUser")
   posts         Post[]
   likes         Like[]
   comments      Comment[]
   notifications Notification[]
   participants  Participant[]
   sentMessages  Message[]      @relation("SentMessages")
+  profileReportsFiled    ProfileReport[] @relation("ProfileReportReporter")
+  profileReportsReceived ProfileReport[] @relation("ProfileReportTarget")
   postedJobs    Job[]
   applications  Application[]
   profileViewsGiven    ProfileView[] @relation("ProfileViewer")
   profileViewsReceived ProfileView[] @relation("ProfileViewed")
+}
+
+model Follow {
+  id          String   @id @default(uuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("FollowerUser", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("FollowingUser", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
 }
 
 model Session {
@@ -231,6 +249,25 @@ model ProfileView {
   @@index([viewerId, viewedUserId, createdAt])
 }
 
+model ProfileReport {
+  id             String              @id @default(uuid())
+  reporterId     String
+  reportedUserId String
+  reason         ProfileReportReason
+  details        String?
+  status         ProfileReportStatus @default(OPEN)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  reporter     User @relation("ProfileReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser User @relation("ProfileReportTarget", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([reporterId, reportedUserId])
+  @@index([reporterId, createdAt])
+  @@index([reportedUserId, createdAt])
+  @@index([status, createdAt])
+}
+
 model Job {
   id          String   @id @default(uuid())
   title       String
@@ -315,4 +352,19 @@ enum NotificationType {
   JOB_APPLIED
   APPLICATION_STATUS_UPDATED
   PROFILE_VIEWED
+}
+
+enum ProfileReportReason {
+  SPAM
+  IMPERSONATION
+  HARASSMENT
+  MISINFORMATION
+  INAPPROPRIATE
+  OTHER
+}
+
+enum ProfileReportStatus {
+  OPEN
+  REVIEWED
+  DISMISSED
 }
