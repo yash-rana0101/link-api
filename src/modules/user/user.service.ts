@@ -140,6 +140,7 @@ const completePostSelect = {
   id: true,
   userId: true,
   content: true,
+  imageUrl: true,
   createdAt: true,
   _count: {
     select: {
@@ -226,9 +227,47 @@ interface ProfilePostRecord {
   id: string;
   userId: string;
   content: string;
+  imageUrl: string | null;
   createdAt: Date;
   likeCount: number;
   commentCount: number;
+}
+
+interface ProfileEducationRecord {
+  id: string;
+  experienceId: string;
+  institutionName: string;
+  degree: string;
+  description: string | null;
+  startDate: Date;
+  endDate: Date | null;
+  proofUrl: string;
+  createdAt: Date;
+}
+
+interface ProfileProjectRecord {
+  id: string;
+  experienceId: string;
+  organizationName: string;
+  title: string;
+  description: string | null;
+  type: ArtifactType;
+  url: string;
+  createdAt: Date;
+}
+
+interface ProfileAnalyticsRecord {
+  totalConnections: number;
+  totalExperiences: number;
+  verifiedExperiences: number;
+  totalArtifacts: number;
+  certificateCount: number;
+  totalPosts: number;
+  totalSkills: number;
+  totalProjects: number;
+  totalReactions: number;
+  totalComments: number;
+  totalProfileViews: number;
 }
 
 interface ProfileProofRecord {
@@ -255,8 +294,12 @@ export interface CompleteProfileResult {
   stats: ProfileStatsResult;
   experiences: CompleteExperienceRecord[];
   certificates: ProfileCertificateRecord[];
+  education: ProfileEducationRecord[];
+  projects: ProfileProjectRecord[];
   connections: ProfileConnectionRecord[];
   posts: ProfilePostRecord[];
+  featuredPost: ProfilePostRecord | null;
+  analytics: ProfileAnalyticsRecord;
 }
 
 export interface PublicProfileResult {
@@ -264,6 +307,11 @@ export interface PublicProfileResult {
   stats: ProfileStatsResult;
   experiences: CompleteExperienceRecord[];
   certificates: ProfileCertificateRecord[];
+  education: ProfileEducationRecord[];
+  projects: ProfileProjectRecord[];
+  posts: ProfilePostRecord[];
+  featuredPost: ProfilePostRecord | null;
+  analytics: ProfileAnalyticsRecord;
 }
 
 export interface ProfileViewerRecord {
@@ -540,13 +588,22 @@ export class UserService {
       throw new HttpError(404, "Public profile not found.");
     }
 
-    const [experiences, totalConnections, totalPosts] = await Promise.all([
+    const [experiences, posts, totalConnections, totalPosts, totalProfileViews] = await Promise.all([
       this.app.prisma.experience.findMany({
         where: {
           userId: profile.id,
         },
         orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
         select: completeExperienceSelect,
+      }),
+      this.app.prisma.post.findMany({
+        where: {
+          userId: profile.id,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        select: completePostSelect,
       }),
       this.app.prisma.connection.count({
         where: {
@@ -559,10 +616,34 @@ export class UserService {
           userId: profile.id,
         },
       }),
+      this.app.prisma.profileView.count({
+        where: {
+          viewedUserId: profile.id,
+        },
+      }),
     ]);
 
     const certificates = this.buildCertificates(experiences);
+    const education = this.buildEducation(experiences);
+    const projects = this.buildProjects(experiences);
+    const mappedPosts = posts.map((post) => ({
+      id: post.id,
+      userId: post.userId,
+      content: post.content,
+      imageUrl: post.imageUrl,
+      createdAt: post.createdAt,
+      likeCount: post._count.likes,
+      commentCount: post._count.comments,
+    }));
+    const featuredPost = this.pickFeaturedPost(mappedPosts);
     const stats = this.buildProfileStats(experiences, certificates.length, totalConnections, totalPosts);
+    const analytics = this.buildProfileAnalytics(
+      stats,
+      profile.skills.length,
+      projects.length,
+      mappedPosts,
+      totalProfileViews,
+    );
 
     if (viewerId) {
       try {
@@ -584,6 +665,11 @@ export class UserService {
       stats,
       experiences,
       certificates,
+      education,
+      projects,
+      posts: mappedPosts,
+      featuredPost,
+      analytics,
     };
   }
 
@@ -847,7 +933,7 @@ export class UserService {
     const normalizedUserId = this.normalizeRequiredId(userId, "userId");
     const profile = await this.getProfile(normalizedUserId);
 
-    const [experiences, connections, posts] = await Promise.all([
+    const [experiences, connections, posts, totalProfileViews] = await Promise.all([
       this.app.prisma.experience.findMany({
         where: {
           userId: normalizedUserId,
@@ -874,9 +960,16 @@ export class UserService {
         },
         select: completePostSelect,
       }),
+      this.app.prisma.profileView.count({
+        where: {
+          viewedUserId: normalizedUserId,
+        },
+      }),
     ]);
 
     const certificates = this.buildCertificates(experiences);
+    const education = this.buildEducation(experiences);
+    const projects = this.buildProjects(experiences);
 
     const mappedConnections = connections.map((connection) => ({
       id: connection.id,
@@ -890,10 +983,13 @@ export class UserService {
       id: post.id,
       userId: post.userId,
       content: post.content,
+      imageUrl: post.imageUrl,
       createdAt: post.createdAt,
       likeCount: post._count.likes,
       commentCount: post._count.comments,
     }));
+
+    const featuredPost = this.pickFeaturedPost(mappedPosts);
 
     const stats = this.buildProfileStats(
       experiences,
@@ -902,13 +998,25 @@ export class UserService {
       mappedPosts.length,
     );
 
+    const analytics = this.buildProfileAnalytics(
+      stats,
+      profile.skills.length,
+      projects.length,
+      mappedPosts,
+      totalProfileViews,
+    );
+
     return {
       profile,
       stats,
       experiences,
       certificates,
+      education,
+      projects,
       connections: mappedConnections,
       posts: mappedPosts,
+      featuredPost,
+      analytics,
     };
   }
 
@@ -1167,6 +1275,88 @@ export class UserService {
           createdAt: artifact.createdAt,
         })))
       .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+  }
+
+  private buildEducation(experiences: CompleteExperienceRecord[]): ProfileEducationRecord[] {
+    return experiences
+      .flatMap((experience) => experience.artifacts
+        .filter((artifact) => artifact.type === ArtifactType.CERTIFICATE)
+        .map((artifact) => ({
+          id: artifact.id,
+          experienceId: experience.id,
+          institutionName: experience.companyName,
+          degree: experience.role,
+          description: experience.description,
+          startDate: experience.startDate,
+          endDate: experience.endDate,
+          proofUrl: artifact.url,
+          createdAt: artifact.createdAt,
+        })))
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+  }
+
+  private buildProjects(experiences: CompleteExperienceRecord[]): ProfileProjectRecord[] {
+    return experiences
+      .flatMap((experience) => experience.artifacts
+        .filter((artifact) => (
+          artifact.type === ArtifactType.PROJECT
+          || artifact.type === ArtifactType.PORTFOLIO
+          || artifact.type === ArtifactType.GITHUB
+        ))
+        .map((artifact) => ({
+          id: artifact.id,
+          experienceId: experience.id,
+          organizationName: experience.companyName,
+          title: experience.role,
+          description: experience.description,
+          type: artifact.type,
+          url: artifact.url,
+          createdAt: artifact.createdAt,
+        })))
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+  }
+
+  private pickFeaturedPost(posts: ProfilePostRecord[]): ProfilePostRecord | null {
+    if (!posts.length) {
+      return null;
+    }
+
+    return [...posts]
+      .sort((left, right) => {
+        const leftScore = left.likeCount * 2 + left.commentCount;
+        const rightScore = right.likeCount * 2 + right.commentCount;
+
+        if (rightScore !== leftScore) {
+          return rightScore - leftScore;
+        }
+
+        return right.createdAt.getTime() - left.createdAt.getTime();
+      })[0] ?? null;
+  }
+
+  private buildProfileAnalytics(
+    stats: ProfileStatsResult,
+    totalSkills: number,
+    totalProjects: number,
+    posts: ProfilePostRecord[],
+    totalProfileViews: number,
+  ): ProfileAnalyticsRecord {
+    const totalReactions = posts.reduce((sum, post) => sum + post.likeCount, 0);
+    const totalComments = posts.reduce((sum, post) => sum + post.commentCount, 0);
+
+    return {
+      totalConnections: stats.totalConnections,
+      totalExperiences: stats.totalExperiences,
+      verifiedExperiences: stats.verifiedExperiences,
+      totalArtifacts: stats.totalArtifacts,
+      certificateCount: stats.certificateCount,
+      totalPosts: stats.totalPosts,
+      totalSkills,
+      totalProjects,
+      totalReactions,
+      totalComments,
+      totalProfileViews,
+    };
   }
 
   private buildProfileStats(
